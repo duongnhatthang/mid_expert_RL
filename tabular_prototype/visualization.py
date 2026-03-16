@@ -7,8 +7,10 @@ from .environment import GridEnv
 from .student import TabularSoftmaxPolicy
 
 
-def _capacity_label(cap: int) -> str:
-    """Human-readable label for teacher capacity setting."""
+def _capacity_label(cap) -> str:
+    """Human-readable label for teacher capacity or zeta setting."""
+    if isinstance(cap, float):
+        return f"ζ={cap:.2f}"
     if cap == -1:
         return "No teacher signal (cap=-1)"
     if cap == 0:
@@ -460,6 +462,78 @@ def plot_2x2_results(results_file: str = 'results/exploration_2x2_results.csv'):
             bars[best_idx].set_linewidth(2)
 
     plt.suptitle('2x2 Exploration Experiment: Budget x Horizon', fontsize=14, y=1.02)
+    plt.tight_layout()
+
+    output_path = results_file.replace('.csv', '.png')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    print(f"Figure saved to {output_path}")
+    return output_path
+
+
+# =============================================================================
+# 2x2 Zeta Experiment Plot
+# =============================================================================
+
+def plot_2x2_results_zeta(results_file: str = 'results/exploration_2x2_zeta_results.csv'):
+    """Bar-chart visualization for 2x2 zeta experiment."""
+    import matplotlib.pyplot as plt
+    import matplotlib.cm as cm
+    import pandas as pd
+
+    df = pd.read_csv(results_file)
+
+    conditions = [
+        ('low', 'small'),
+        ('low', 'large'),
+        ('high', 'small'),
+        ('high', 'large'),
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+
+    for ax, (budget_type, horizon_type) in zip(axes.flat, conditions):
+        cond_df = df[(df['budget_type'] == budget_type) & (df['horizon_type'] == horizon_type)]
+
+        if len(cond_df) == 0:
+            ax.set_title(f"{budget_type.title()} Budget + {horizon_type.title()} Horizon\n(No data)")
+            ax.set_visible(False)
+            continue
+
+        actual_budget = int(cond_df['sample_budget'].iloc[0])
+        actual_horizon = int(cond_df['horizon'].iloc[0])
+        title = (f"{budget_type.title()} Budget ({actual_budget:,}) + "
+                 f"{horizon_type.title()} Horizon ({actual_horizon})")
+
+        zeta_vals = sorted(cond_df['zeta'].unique())
+        means, stderrs = [], []
+
+        for z in zeta_vals:
+            data = cond_df[cond_df['zeta'] == z]['final_mean_reward']
+            means.append(data.mean())
+            stderrs.append(data.std() / np.sqrt(len(data)) if len(data) > 1 else 0)
+
+        n_z = len(zeta_vals)
+        colors = cm.viridis(np.linspace(0.2, 0.8, n_z))
+        x_pos = np.arange(n_z)
+
+        bars = ax.bar(x_pos, means, yerr=stderrs, capsize=5, color=colors, alpha=0.8)
+        ax.set_xlabel('Teacher ζ')
+        ax.set_ylabel('Mean Reward')
+        ax.set_ylim(0, 1)
+        ax.set_title(title)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels([f"ζ={z:.2f}" for z in zeta_vals], rotation=30, ha='right')
+        ax.grid(axis='y', alpha=0.3)
+
+        if means:
+            best_idx = int(np.argmax(means))
+            bars[best_idx].set_edgecolor('black')
+            bars[best_idx].set_linewidth(2)
+
+    plt.suptitle('2x2 Exploration Experiment (ζ parameterisation): Budget × Horizon',
+                 fontsize=14, y=1.02)
     plt.tight_layout()
 
     output_path = results_file.replace('.csv', '.png')

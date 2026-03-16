@@ -9,6 +9,7 @@ from .environment import GridEnv, generate_equidistant_goals, compute_exploratio
 from .teacher import (
     compute_teacher_values_auto,
     compute_uniform_random_teacher_values_auto,
+    compute_mixture_teacher_values_auto,
     sample_uniform_random_teacher_knowledge,
 )
 from .student import TabularSoftmaxPolicy, collect_trajectories
@@ -19,6 +20,7 @@ def run_experiment(
     grid_size: int = 10,
     goals: List[Tuple[int, int]] = [(9, 9), (0, 9), (9, 0)],
     teacher_capacity: int = 1,
+    zeta: Optional[float] = None,
     horizon: int = 50,
     sample_budget: int = 10000,
     alpha: float = 0.5,
@@ -28,11 +30,18 @@ def run_experiment(
     eval_interval: int = 10,
     eval_n_episodes: int = 20,
 ) -> Dict:
-    """Run a single experiment and return results dict."""
+    """Run a single experiment and return results dict.
+
+    If ``zeta`` is provided, the teacher is a mixture policy
+    mu(zeta) = zeta * pi* + (1-zeta) * pi_random (coin-flip at each step)
+    and ``teacher_capacity`` is ignored.
+    """
     rng = np.random.default_rng(seed)
     env = GridEnv(grid_size=grid_size, goals=goals, horizon=horizon)
 
-    if teacher_capacity == -1:
+    if zeta is not None:
+        Q_mu, V_mu, gamma = compute_mixture_teacher_values_auto(env, zeta)
+    elif teacher_capacity == -1:
         known_goals = []
         Q_mu, V_mu = None, None
         gamma = compute_gamma_from_horizon(horizon)
@@ -71,7 +80,8 @@ def run_experiment(
 
     return {
         'seed': seed,
-        'teacher_capacity': teacher_capacity,
+        'teacher_capacity': teacher_capacity if zeta is None else None,
+        'zeta': zeta,
         'sample_budget': sample_budget,
         'horizon': horizon,
         'alpha': alpha,
@@ -372,6 +382,188 @@ Expected pattern:
 """)
 
     return summary_data
+
+
+def run_2x2_exploration_experiment_zeta(
+    grid_size: int = 8,
+    n_seeds: int = 10,
+    n_goals: int = 3,
+    alpha: float = 0.5,
+    zeta_values: Optional[List[float]] = None,
+    output_file: str = 'results/exploration_2x2_zeta_results.csv',
+):
+    """
+    2x2 experiment (Budget × Horizon) using the continuous zeta parameterisation.
+
+    Each teacher is the mixture policy mu(zeta) = zeta*pi* + (1-zeta)*pi_random.
+    zeta=0 → pure random, zeta=1 → pure optimal (best teacher).
+    """
+    import os
+    os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
+
+    if zeta_values is None:
+        zeta_values = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+    goals = generate_equidistant_goals(grid_size, n_goals)
+    thresholds = compute_exploration_thresholds(grid_size)
+
+    print("=" * 70)
+    print("2x2 EXPLORATION EXPERIMENT (zeta parameterisation)")
+    print("=" * 70)
+    print(f"Grid size: {grid_size}x{grid_size},  Goals: {n_goals},  Zeta values: {zeta_values}")
+    print(f"Budget LOW:  {thresholds['budget_low']:,}    Budget HIGH: {thresholds['budget_high']:,}")
+    print(f"Horizon SMALL: {thresholds['horizon_small']}   Horizon LARGE: {thresholds['horizon_large']}")
+    print()
+
+    conditions = [
+        {'name': 'Low Budget + Small Horizon',  'budget': thresholds['budget_low'],
+         'horizon': thresholds['horizon_small'], 'budget_type': 'low',  'horizon_type': 'small'},
+        {'name': 'Low Budget + Large Horizon',  'budget': thresholds['budget_low'],
+         'horizon': thresholds['horizon_large'], 'budget_type': 'low',  'horizon_type': 'large'},
+        {'name': 'High Budget + Small Horizon', 'budget': thresholds['budget_high'],
+         'horizon': thresholds['horizon_small'], 'budget_type': 'high', 'horizon_type': 'small'},
+        {'name': 'High Budget + Large Horizon', 'budget': thresholds['budget_high'],
+         'horizon': thresholds['horizon_large'], 'budget_type': 'high', 'horizon_type': 'large'},
+    ]
+
+    all_results = []
+
+    for cond in conditions:
+        print(f"\n{'='*60}")
+        print(f"Running: {cond['name']}")
+        print(f"  Budget: {cond['budget']:,}, Horizon: {cond['horizon']}")
+        print(f"{'='*60}")
+
+        for zeta in zeta_values:
+            print(f"  zeta={zeta:.2f}...", end=" ", flush=True)
+            zeta_results = []
+
+            for seed in range(n_seeds):
+                result = run_experiment(
+                    grid_size=grid_size,
+                    goals=goals,
+                    zeta=zeta,
+                    horizon=cond['horizon'],
+                    sample_budget=cond['budget'],
+                    alpha=alpha,
+                    lr=0.1,
+                    trajectories_per_update=10,
+                    seed=seed,
+                )
+                result['budget_type'] = cond['budget_type']
+                result['horizon_type'] = cond['horizon_type']
+                result['condition'] = cond['name']
+                result['n_goals'] = n_goals
+                zeta_results.append(result)
+                all_results.append(result)
+
+            rewards = [r['final_mean_reward'] for r in zeta_results]
+            mean_r = np.mean(rewards)
+            stderr = np.std(rewards) / np.sqrt(len(rewards))
+            print(f"reward = {mean_r:.3f} ± {stderr:.3f}")
+
+    with open(output_file, 'w', newline='') as f:
+        fieldnames = ['seed', 'zeta', 'n_goals', 'sample_budget', 'horizon',
+                      'alpha', 'lr', 'final_mean_reward', 'final_std_reward',
+                      'final_goal_rate', 'budget_type', 'horizon_type', 'condition']
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in all_results:
+            row = {k: r.get(k, '') for k in fieldnames}
+            writer.writerow(row)
+
+    print(f"\nResults saved to {output_file}")
+    _analyze_2x2_zeta_results(all_results, zeta_values)
+    return all_results
+
+
+def _analyze_2x2_zeta_results(
+    results: List[Dict], zeta_values: List[float]
+):
+    """Print summary for the 2x2 zeta experiment."""
+    import pandas as pd
+
+    df = pd.DataFrame(results)
+    print("\n" + "=" * 70)
+    print("2x2 ZETA EXPERIMENT RESULTS")
+    print("=" * 70)
+
+    for cond in df['condition'].unique():
+        cond_df = df[df['condition'] == cond]
+        print(f"\n{cond}:")
+        for z in sorted(cond_df['zeta'].unique()):
+            cap_data = cond_df[cond_df['zeta'] == z]['final_mean_reward']
+            mean = cap_data.mean()
+            stderr = cap_data.std() / np.sqrt(len(cap_data))
+            print(f"  zeta={z:.2f}: {mean:.3f} ± {stderr:.3f}")
+
+    print("\n" + "=" * 70)
+    print("HYPOTHESIS: Does a mid-zeta teacher outperform the best (zeta=1.0) teacher?")
+    print("=" * 70)
+
+    mid_zeta = zeta_values[len(zeta_values) // 2]
+    best_zeta = 1.0 if 1.0 in zeta_values else max(zeta_values)
+
+    for cond in df['condition'].unique():
+        cond_df = df[df['condition'] == cond]
+        mid = cond_df[cond_df['zeta'] == mid_zeta]['final_mean_reward']
+        best = cond_df[cond_df['zeta'] == best_zeta]['final_mean_reward']
+        if len(mid) > 0 and len(best) > 0:
+            diff = mid.mean() - best.mean()
+            print(f"\n{cond}:  mid(zeta={mid_zeta}) = {mid.mean():.3f},  "
+                  f"best(zeta={best_zeta}) = {best.mean():.3f},  diff = {diff:+.3f}  "
+                  f"{'✓ mid wins' if diff > 0 else '✗ best wins'}")
+
+
+def run_learning_curve_experiment_zeta(
+    grid_size: int = 10,
+    goals: Optional[List[Tuple[int, int]]] = None,
+    zeta_values: Optional[List[float]] = None,
+    horizon: int = 50,
+    sample_budget: int = 10000,
+    alpha: float = 0.5,
+    lr: float = 0.1,
+    n_seeds: int = 5,
+    trajectories_per_update: int = 10,
+    eval_interval: int = 2,
+    eval_n_episodes: int = 50,
+) -> Dict[float, list]:
+    """
+    Learning curve experiment using the continuous zeta parameterisation.
+
+    Returns:
+        Dict mapping zeta -> list of per-seed histories.
+    """
+    if goals is None:
+        goals = generate_equidistant_goals(grid_size, 3)
+    if zeta_values is None:
+        zeta_values = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+    histories: Dict[float, list] = {}
+
+    for zeta in zeta_values:
+        histories[zeta] = []
+        print(f"  zeta={zeta:.2f}...", end=" ", flush=True)
+        for seed in range(n_seeds):
+            result = run_experiment(
+                grid_size=grid_size,
+                goals=goals,
+                zeta=zeta,
+                horizon=horizon,
+                sample_budget=sample_budget,
+                alpha=alpha,
+                lr=lr,
+                trajectories_per_update=trajectories_per_update,
+                seed=seed,
+                eval_interval=eval_interval,
+                eval_n_episodes=eval_n_episodes,
+            )
+            histories[zeta].append(result['history'])
+        rewards = [h[-1]['mean_reward'] for h in histories[zeta] if h]
+        print(f"final reward = {np.mean(rewards):.3f} ± "
+              f"{np.std(rewards)/np.sqrt(len(rewards)):.3f}")
+
+    return histories
 
 
 def analyze_results(results_file: str = 'results/tabular_results.csv'):

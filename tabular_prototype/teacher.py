@@ -278,3 +278,93 @@ def get_teacher_policy(Q_mu: np.ndarray, temperature: float = 0.1) -> np.ndarray
     logits = logits - logits.max(axis=1, keepdims=True)
     exp_logits = np.exp(logits)
     return exp_logits / exp_logits.sum(axis=1, keepdims=True)
+
+
+def compute_mixture_teacher_values(
+    env: GridEnv,
+    zeta: float,
+    gamma: float = 0.99,
+    tol: float = 1e-6,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute Q^mu and V^mu for a mixture teacher policy mu(zeta).
+
+    mu(zeta) takes the optimal action with probability zeta and a
+    uniformly random action with probability (1-zeta) — i.e. a coin
+    flip at each step:
+        a ~ mu(zeta | s)  =>  a = a*(s) w.p. zeta, else Uniform(actions)
+
+    Q^mu and V^mu are evaluated by rolling out mu(zeta) in the TRUE MDP
+    (using env.goals / env.traps).  The Bellman aggregate is:
+        V^mu(s) = zeta * Q^mu(s, a*(s)) + (1-zeta)/n_actions * sum_a Q^mu(s,a)
+
+    Args:
+        env:   GridEnv instance
+        zeta:  mixture weight in [0, 1]  (0 = pure random, 1 = pure optimal)
+        gamma: discount factor
+        tol:   convergence tolerance
+
+    Returns:
+        Q: shape (n_states, n_actions)
+        V: shape (n_states,)
+    """
+    T = _build_transition_model(env)
+    R_true = _build_reward_matrix(env, env.goals)
+    absorbing_true = _build_absorbing_state_indices(env, env.goals, env.traps)
+
+    # Step 1: compute the optimal policy w.r.t. ALL true goals
+    Q_star, _ = _solve_discounted_values(
+        T, R_true, absorbing_true, gamma,
+        aggregate_fn=lambda q: q.max(axis=1),
+        tol=tol,
+    )
+    optimal_actions = Q_star.argmax(axis=1)  # shape (n_states,)
+
+    # Step 2: evaluate the mixture policy in the true MDP.
+    # The Bellman contraction uses the mixture policy's expected value so that
+    # Q^mu(s,a) correctly reflects "take action a then follow mu(zeta) forever."
+    def mixture_aggregate(Q: np.ndarray) -> np.ndarray:
+        n_states = Q.shape[0]
+        V_opt = Q[np.arange(n_states), optimal_actions]
+        V_rand = Q.mean(axis=1)
+        return zeta * V_opt + (1.0 - zeta) * V_rand
+
+    Q, _ = _solve_discounted_values(
+        T, R_true, absorbing_true, gamma,
+        aggregate_fn=mixture_aggregate,
+        tol=tol,
+    )
+
+    # Use the uniform-random baseline for the ADVANTAGE V so that
+    # A^mu(s,a) = Q^mu(s,a) - mean_a Q^mu(s,a).
+    #
+    # Why: the mixture policy value V^mu(s) = zeta*Q(s,a*) + (1-zeta)*mean Q,
+    # which makes A(s,a*) = (1-zeta)*[Q(s,a*) - mean Q] → 0 as zeta → 1.
+    # At zeta=1 the optimal action has ZERO advantage — only bad actions are
+    # penalised, never the right action rewarded — so the teacher signal is
+    # entirely one-sided and weaker than the random teacher (zeta=0).
+    #
+    # With the random-policy baseline, A(s,a*) = Q^mu(s,a*) - mean Q^mu > 0
+    # for all zeta in (0,1], and the spread grows with zeta (better policy →
+    # larger Q* spread around the mean), giving stronger signal for better
+    # teachers.
+    V_baseline = Q.mean(axis=1)
+    return Q, V_baseline
+
+
+def compute_mixture_teacher_values_auto(
+    env: GridEnv,
+    zeta: float,
+    gamma: Optional[float] = None,
+    tol: float = 1e-6,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Compute mixture teacher values with automatic gamma from horizon.
+
+    Returns:
+        Q, V, effective_gamma
+    """
+    if gamma is None:
+        gamma = compute_gamma_from_horizon(env.horizon)
+    Q, V = compute_mixture_teacher_values(env, zeta, gamma, tol)
+    return Q, V, gamma
