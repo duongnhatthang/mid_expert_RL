@@ -335,21 +335,41 @@ def compute_mixture_teacher_values(
         tol=tol,
     )
 
-    # Use the uniform-random baseline for the ADVANTAGE V so that
-    # A^mu(s,a) = Q^mu(s,a) - mean_a Q^mu(s,a).
+    # Compute the action-centred advantage A(s,a) = Q^mu(s,a) - mean_a Q^mu(s,a)
+    # and normalise it so that all zeta values provide the same maximum signal
+    # magnitude (L∞ normalisation).
     #
-    # Why: the mixture policy value V^mu(s) = zeta*Q(s,a*) + (1-zeta)*mean Q,
-    # which makes A(s,a*) = (1-zeta)*[Q(s,a*) - mean Q] → 0 as zeta → 1.
-    # At zeta=1 the optimal action has ZERO advantage — only bad actions are
-    # penalised, never the right action rewarded — so the teacher signal is
-    # entirely one-sided and weaker than the random teacher (zeta=0).
+    # Why normalise?
+    #   In a well-connected grid the optimal policy spreads high value across ALL
+    #   actions (every direction can reach a goal eventually), so the action-level
+    #   spread of Q* is tiny (~0.02).  By contrast, Q^random has huge spread near
+    #   goals (~0.23) because a random walk almost never reaches a goal after
+    #   taking a suboptimal action.  Without normalisation the random teacher
+    #   (zeta=0) provides a 12× stronger gradient signal than the optimal teacher
+    #   (zeta=1), making zeta=0 trivially win for any alpha.
     #
-    # With the random-policy baseline, A(s,a*) = Q^mu(s,a*) - mean Q^mu > 0
-    # for all zeta in (0,1], and the spread grows with zeta (better policy →
-    # larger Q* spread around the mean), giving stronger signal for better
-    # teachers.
+    #   Normalising by max|A^mu| equates the signal *strength* across zeta values
+    #   so that what actually differs between teachers is the signal *direction*:
+    #     zeta=1  →  direction perfectly aligned with Q*  (correct everywhere)
+    #     zeta=0  →  direction based on Q^random          (correct near goals,
+    #                                                       noisy elsewhere)
+    #     mid-ζ  →  intermediate coverage and accuracy
+    #
+    #   This is the right test of the mid-capacity hypothesis: does a teacher
+    #   whose signal covers more states (higher zeta) beat one whose signal is
+    #   concentrated at goal-adjacent states (lower zeta), when both have equal
+    #   signal power?
     V_baseline = Q.mean(axis=1)
-    return Q, V_baseline
+    A = Q - V_baseline[:, np.newaxis]
+    max_abs_A = np.abs(A).max()
+    if max_abs_A > 1e-10:
+        A_norm = A / max_abs_A
+        # Return Q_eff such that Q_eff - V_baseline = A_norm and
+        # mean_a Q_eff(s) = V_baseline(s) (consistent with mean baseline).
+        Q_ret = A_norm + V_baseline[:, np.newaxis]
+    else:
+        Q_ret = Q
+    return Q_ret, V_baseline
 
 
 def compute_mixture_teacher_values_auto(
