@@ -1,11 +1,17 @@
 """PAV-RL policy gradient, updates, and evaluation."""
 
 import numpy as np
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 from .environment import GridEnv
 from .student import TabularSoftmaxPolicy, Transition
-from .teacher import get_teacher_advantage
+from .teacher import (
+    get_teacher_advantage,
+    _build_transition_model,
+    _build_reward_matrix,
+    _build_absorbing_state_indices,
+    _solve_discounted_values,
+)
 
 
 def estimate_returns(trajectory: List[Transition], gamma: float = 0.99) -> List[float]:
@@ -18,6 +24,111 @@ def estimate_returns(trajectory: List[Transition], gamma: float = 0.99) -> List[
     return list(reversed(returns))
 
 
+# =========================================================================
+# Exact Q^π computation (replaces Monte Carlo returns)
+# =========================================================================
+
+def compute_student_qvalues(
+    env: GridEnv,
+    policy: TabularSoftmaxPolicy,
+    gamma: float,
+    tol: float = 1e-6,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute exact Q^π(s,a) and V^π(s) for the student's current policy
+    via Bellman policy evaluation.
+
+        Q^π(s,a) = R(s,a) + γ V^π(T(s,a))
+        V^π(s)   = Σ_a π(a|s) Q^π(s,a)
+
+    Returns:
+        Q_pi: shape (n_states, n_actions)
+        V_pi: shape (n_states,)
+    """
+    T = _build_transition_model(env)
+    R = _build_reward_matrix(env, env.goals)
+    absorbing = _build_absorbing_state_indices(env, env.goals, env.traps)
+
+    def policy_aggregate(Q):
+        V = np.zeros(Q.shape[0])
+        for s in range(Q.shape[0]):
+            probs = policy.get_probs(s)
+            V[s] = probs @ Q[s]
+        return V
+
+    return _solve_discounted_values(T, R, absorbing, gamma, policy_aggregate, tol)
+
+
+# =========================================================================
+# State-action visitation tracking
+# =========================================================================
+
+def compute_state_action_visitation(
+    trajectories: List[List[Transition]],
+    n_states: int,
+    n_actions: int,
+) -> np.ndarray:
+    """
+    Compute empirical state-action visitation counts from trajectories.
+
+    Returns:
+        counts: shape (n_states, n_actions) — raw visit counts.
+    """
+    counts = np.zeros((n_states, n_actions))
+    for traj in trajectories:
+        for trans in traj:
+            counts[trans.state_idx, trans.action] += 1
+    return counts
+
+
+def visitation_metrics(counts: np.ndarray) -> Dict[str, float]:
+    """
+    Compute summary metrics from state-action visitation counts.
+
+    Args:
+        counts: shape (n_states, n_actions) — raw visit counts.
+
+    Returns:
+        Dict with keys: unique_sa, unique_states, sa_entropy,
+        state_entropy, total_visits.
+    """
+    total = counts.sum()
+    if total == 0:
+        return {
+            'unique_sa': 0,
+            'unique_states': 0,
+            'sa_entropy': 0.0,
+            'state_entropy': 0.0,
+            'total_visits': 0,
+        }
+
+    # State-action level
+    sa_flat = counts.ravel()
+    unique_sa = int(np.sum(sa_flat > 0))
+    sa_probs = sa_flat / total
+    sa_probs = sa_probs[sa_probs > 0]
+    sa_entropy = float(-np.sum(sa_probs * np.log(sa_probs)))
+
+    # State level
+    state_counts = counts.sum(axis=1)
+    unique_states = int(np.sum(state_counts > 0))
+    state_probs = state_counts / total
+    state_probs = state_probs[state_probs > 0]
+    state_entropy = float(-np.sum(state_probs * np.log(state_probs)))
+
+    return {
+        'unique_sa': unique_sa,
+        'unique_states': unique_states,
+        'sa_entropy': sa_entropy,
+        'state_entropy': state_entropy,
+        'total_visits': int(total),
+    }
+
+
+# =========================================================================
+# PAV-RL gradient (now supports exact Q^π)
+# =========================================================================
+
 def compute_pav_rl_gradient(
     policy: TabularSoftmaxPolicy,
     trajectories: List[List[Transition]],
@@ -25,6 +136,7 @@ def compute_pav_rl_gradient(
     V_mu: Optional[np.ndarray],
     alpha: float,
     gamma: float = 0.99,
+    Q_pi: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Compute PAV-RL policy gradient.
@@ -32,13 +144,24 @@ def compute_pav_rl_gradient(
     grad J = E[sum_h grad log pi(a_h|s_h) * (Q^pi(s_h,a_h) + alpha * A^mu(s_h,a_h))]
 
     For tabular softmax: grad log pi(a|s) w.r.t. theta[s,a'] = 1(a=a') - pi(a'|s)
+
+    Args:
+        Q_pi: If provided, use exact Q^π(s,a) instead of Monte Carlo returns.
+              This eliminates variance from return estimation while keeping
+              on-policy state-action sampling for the gradient.
     """
     grad = np.zeros_like(policy.theta)
 
     for traj in trajectories:
-        returns = estimate_returns(traj, gamma)
+        if Q_pi is None:
+            returns = estimate_returns(traj, gamma)
 
-        for trans, G_t in zip(traj, returns):
+        for i, trans in enumerate(traj):
+            if Q_pi is not None:
+                G_t = Q_pi[trans.state_idx, trans.action]
+            else:
+                G_t = returns[i]
+
             if Q_mu is not None and V_mu is not None:
                 A_mu = get_teacher_advantage(
                     Q_mu, V_mu, trans.state_idx, trans.action
