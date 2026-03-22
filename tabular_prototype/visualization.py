@@ -395,6 +395,62 @@ def visualize_advantage_grid(
 
 
 # =============================================================================
+# State-Action Visitation Heatmap
+# =============================================================================
+
+def visualize_state_visitation(
+    env: GridEnv,
+    visitation_counts: np.ndarray,
+    title: str = "State Visitation",
+    goals: Optional[List[Tuple[int, int]]] = None,
+    save_path: Optional[str] = None,
+) -> Any:
+    """
+    Heatmap of state visitation (summed over actions).
+
+    Args:
+        visitation_counts: shape (n_states, n_actions) — raw visit counts.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+
+    state_visits = visitation_counts.sum(axis=1)
+    grid = state_visits.reshape(env.grid_size, env.grid_size)
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    im = ax.imshow(grid, cmap='hot', origin='upper')
+    plt.colorbar(im, ax=ax, label='Visit Count')
+
+    start = env.start
+    ax.add_patch(patches.Circle((start[1], start[0]), 0.3,
+                                fill=True, color='cyan', alpha=0.8))
+    ax.text(start[1], start[0], 'S', ha='center', va='center',
+            color='black', fontweight='bold', fontsize=10)
+
+    if goals:
+        for goal in goals:
+            ax.add_patch(patches.Rectangle((goal[1]-0.4, goal[0]-0.4), 0.8, 0.8,
+                                           fill=False, edgecolor='lime',
+                                           linewidth=2.5))
+            ax.text(goal[1], goal[0], 'G', ha='center', va='center',
+                    color='lime', fontweight='bold', fontsize=10)
+
+    ax.set_title(title, fontsize=13)
+    ax.set_xlabel('Column')
+    ax.set_ylabel('Row')
+    ax.set_xticks(range(env.grid_size))
+    ax.set_yticks(range(env.grid_size))
+    ax.grid(True, alpha=0.2)
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Visitation figure saved to {save_path}")
+
+    return fig
+
+
+# =============================================================================
 # 2x2 Experiment Plot
 # =============================================================================
 

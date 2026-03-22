@@ -210,8 +210,8 @@ def main():
                         default='2x2', help='Experiment mode')
     parser.add_argument('--grid-size', type=int, default=8,
                         help='Grid size for 2x2 experiment')
-    parser.add_argument('--n-seeds', type=int, default=5,
-                        help='Number of random seeds')
+    parser.add_argument('--n-seeds', type=int, default=30,
+                        help='Number of random seeds (30 for smooth learning curves)')
     parser.add_argument('--n-goals', type=int, default=3,
                         help='Number of goals in the environment')
     parser.add_argument('--alpha', type=float, default=0.5,

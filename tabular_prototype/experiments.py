@@ -13,7 +13,14 @@ from .teacher import (
     sample_uniform_random_teacher_knowledge,
 )
 from .student import TabularSoftmaxPolicy, collect_trajectories
-from .training import compute_pav_rl_gradient, update_policy, evaluate_policy
+from .training import (
+    compute_pav_rl_gradient,
+    update_policy,
+    evaluate_policy,
+    compute_student_qvalues,
+    compute_state_action_visitation,
+    visitation_metrics,
+)
 
 
 def run_experiment(
@@ -59,24 +66,40 @@ def run_experiment(
     total_steps = 0
     update_count = 0
     history = []
+    cumulative_visitation = np.zeros((env.n_states, env.n_actions))
 
     while total_steps < sample_budget:
         trajectories = collect_trajectories(env, policy, trajectories_per_update, rng)
         total_steps += sum(len(traj) for traj in trajectories)
 
-        grad = compute_pav_rl_gradient(policy, trajectories, Q_mu, V_mu, alpha, gamma)
+        # Track state-action visitation
+        step_vis = compute_state_action_visitation(
+            trajectories, env.n_states, env.n_actions
+        )
+        cumulative_visitation += step_vis
+
+        # Exact Q^π replaces Monte Carlo returns
+        Q_pi, V_pi = compute_student_qvalues(env, policy, gamma)
+
+        grad = compute_pav_rl_gradient(
+            policy, trajectories, Q_mu, V_mu, alpha, gamma, Q_pi=Q_pi
+        )
         update_policy(policy, grad, lr)
         update_count += 1
 
         if update_count % eval_interval == 0:
             eval_results = evaluate_policy(env, policy, n_episodes=eval_n_episodes, rng=rng)
+            vis_m = visitation_metrics(cumulative_visitation)
             history.append({
                 'steps': total_steps,
                 'mean_reward': eval_results['mean_reward'],
-                'goal_rate': eval_results['goal_rate']
+                'goal_rate': eval_results['goal_rate'],
+                'unique_sa': vis_m['unique_sa'],
+                'state_entropy': vis_m['state_entropy'],
             })
 
     final_eval = evaluate_policy(env, policy, n_episodes=100, rng=rng)
+    final_vis = visitation_metrics(cumulative_visitation)
 
     return {
         'seed': seed,
@@ -89,7 +112,12 @@ def run_experiment(
         'final_mean_reward': final_eval['mean_reward'],
         'final_std_reward': final_eval['std_reward'],
         'final_goal_rate': final_eval['goal_rate'],
-        'history': history
+        'final_unique_sa': final_vis['unique_sa'],
+        'final_unique_states': final_vis['unique_states'],
+        'final_state_entropy': final_vis['state_entropy'],
+        'final_sa_entropy': final_vis['sa_entropy'],
+        'final_total_visits': final_vis['total_visits'],
+        'history': history,
     }
 
 
@@ -133,7 +161,9 @@ def run_experiment_suite(
 
     with open(output_file, 'w', newline='') as f:
         fieldnames = ['seed', 'teacher_capacity', 'sample_budget', 'horizon',
-                      'alpha', 'lr', 'final_mean_reward', 'final_std_reward', 'final_goal_rate']
+                      'alpha', 'lr', 'final_mean_reward', 'final_std_reward', 'final_goal_rate',
+                      'final_unique_sa', 'final_unique_states',
+                      'final_state_entropy', 'final_sa_entropy', 'final_total_visits']
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in results:
@@ -227,12 +257,19 @@ def run_2x2_exploration_experiment(
             rewards = [r['final_mean_reward'] for r in cap_results]
             mean_reward = np.mean(rewards)
             stderr = np.std(rewards) / np.sqrt(len(rewards))
-            print(f"reward = {mean_reward:.3f} ± {stderr:.3f}")
+            mean_unique_sa = np.mean([r['final_unique_sa'] for r in cap_results])
+            mean_state_ent = np.mean([r['final_state_entropy'] for r in cap_results])
+            print(f"reward = {mean_reward:.3f} ± {stderr:.3f}  |  "
+                  f"unique_sa = {mean_unique_sa:.0f}, "
+                  f"state_entropy = {mean_state_ent:.2f}")
 
     with open(output_file, 'w', newline='') as f:
         fieldnames = ['seed', 'teacher_capacity', 'n_goals', 'sample_budget', 'horizon',
                       'alpha', 'lr', 'final_mean_reward', 'final_std_reward',
-                      'final_goal_rate', 'budget_type', 'horizon_type', 'condition']
+                      'final_goal_rate',
+                      'final_unique_sa', 'final_unique_states',
+                      'final_state_entropy', 'final_sa_entropy', 'final_total_visits',
+                      'budget_type', 'horizon_type', 'condition']
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in all_results:
@@ -252,7 +289,7 @@ def run_learning_curve_experiment(
     sample_budget: int = 10000,
     alpha: float = 0.5,
     lr: float = 0.1,
-    n_seeds: int = 5,
+    n_seeds: int = 30,
     trajectories_per_update: int = 10,
     eval_interval: int = 2,
     eval_n_episodes: int = 50,
@@ -290,8 +327,12 @@ def run_learning_curve_experiment(
             )
             histories[cap].append(result['history'])
         rewards = [h[-1]['mean_reward'] for h in histories[cap] if h]
+        unique_sas = [h[-1].get('unique_sa', 0) for h in histories[cap] if h]
+        state_ents = [h[-1].get('state_entropy', 0) for h in histories[cap] if h]
         print(f"final reward = {np.mean(rewards):.3f} ± "
-              f"{np.std(rewards)/np.sqrt(len(rewards)):.3f}")
+              f"{np.std(rewards)/np.sqrt(len(rewards)):.3f}  |  "
+              f"unique_sa = {np.mean(unique_sas):.0f}, "
+              f"state_entropy = {np.mean(state_ents):.2f}")
 
     return histories
 
@@ -460,12 +501,19 @@ def run_2x2_exploration_experiment_zeta(
             rewards = [r['final_mean_reward'] for r in zeta_results]
             mean_r = np.mean(rewards)
             stderr = np.std(rewards) / np.sqrt(len(rewards))
-            print(f"reward = {mean_r:.3f} ± {stderr:.3f}")
+            mean_unique_sa = np.mean([r['final_unique_sa'] for r in zeta_results])
+            mean_state_ent = np.mean([r['final_state_entropy'] for r in zeta_results])
+            print(f"reward = {mean_r:.3f} ± {stderr:.3f}  |  "
+                  f"unique_sa = {mean_unique_sa:.0f}, "
+                  f"state_entropy = {mean_state_ent:.2f}")
 
     with open(output_file, 'w', newline='') as f:
         fieldnames = ['seed', 'zeta', 'n_goals', 'sample_budget', 'horizon',
                       'alpha', 'lr', 'final_mean_reward', 'final_std_reward',
-                      'final_goal_rate', 'budget_type', 'horizon_type', 'condition']
+                      'final_goal_rate',
+                      'final_unique_sa', 'final_unique_states',
+                      'final_state_entropy', 'final_sa_entropy', 'final_total_visits',
+                      'budget_type', 'horizon_type', 'condition']
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in all_results:
@@ -523,7 +571,7 @@ def run_learning_curve_experiment_zeta(
     sample_budget: int = 10000,
     alpha: float = 0.5,
     lr: float = 0.1,
-    n_seeds: int = 5,
+    n_seeds: int = 30,
     trajectories_per_update: int = 10,
     eval_interval: int = 2,
     eval_n_episodes: int = 50,
@@ -560,8 +608,12 @@ def run_learning_curve_experiment_zeta(
             )
             histories[zeta].append(result['history'])
         rewards = [h[-1]['mean_reward'] for h in histories[zeta] if h]
+        unique_sas = [h[-1].get('unique_sa', 0) for h in histories[zeta] if h]
+        state_ents = [h[-1].get('state_entropy', 0) for h in histories[zeta] if h]
         print(f"final reward = {np.mean(rewards):.3f} ± "
-              f"{np.std(rewards)/np.sqrt(len(rewards)):.3f}")
+              f"{np.std(rewards)/np.sqrt(len(rewards)):.3f}  |  "
+              f"unique_sa = {np.mean(unique_sas):.0f}, "
+              f"state_entropy = {np.mean(state_ents):.2f}")
 
     return histories
 
