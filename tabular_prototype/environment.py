@@ -314,7 +314,7 @@ def compute_exploration_thresholds(grid_size: int, n_actions: int = 4) -> dict:
         'n_state_actions': n_state_actions,
         'corner_distance': corner_dist,
         'budget_low': n_state_actions * 2,
-        'budget_high': n_state_actions * 40,
+        'budget_high': n_state_actions * 8,
         'horizon_small': corner_dist,
         'horizon_large': grid_size * 4,
     }
