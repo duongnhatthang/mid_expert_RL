@@ -92,10 +92,12 @@ def run_experiment(
         if update_count % eval_interval == 0:
             eval_results = evaluate_policy(env, policy, n_episodes=eval_n_episodes, rng=rng)
             vis_m = visitation_metrics(cumulative_visitation)
+            start_idx = env.state_to_idx(env.start)
             history.append({
                 'steps': total_steps,
                 'mean_reward': eval_results['mean_reward'],
                 'goal_rate': eval_results['goal_rate'],
+                'exact_V_start': float(V_pi[start_idx]),
                 'unique_sa': vis_m['unique_sa'],
                 'state_entropy': vis_m['state_entropy'],
             })

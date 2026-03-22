@@ -210,8 +210,8 @@ def main():
                         default='2x2', help='Experiment mode')
     parser.add_argument('--grid-size', type=int, default=8,
                         help='Grid size for 2x2 experiment')
-    parser.add_argument('--n-seeds', type=int, default=30,
-                        help='Number of random seeds (30 for smooth learning curves)')
+    parser.add_argument('--n-seeds', type=int, default=5,
+                        help='Number of random seeds (exact V^π eval is variance-free)')
     parser.add_argument('--n-goals', type=int, default=3,
                         help='Number of goals in the environment')
     parser.add_argument('--alpha', type=float, default=0.5,
@@ -219,13 +219,13 @@ def main():
     parser.add_argument('--output', type=str, default='results/exploration_2x2_results.csv',
                         help='Output file for results')
     parser.add_argument('--horizon', type=int, default=None,
-                        help='Large horizon value (default: 10 * grid_size)')
+                        help='Horizon (default: horizon_small from exploration thresholds)')
     parser.add_argument('--teacher-capacity', type=int, default=1,
                         help='Teacher capacity for quick mode')
     parser.add_argument('--teacher-capacities', type=str, default=None,
                         help='Comma-separated teacher capacities (e.g. "-1,0,1,2,3")')
-    parser.add_argument('--sample-budget', type=int, default=12000,
-                        help='Sample budget for quick/learning_curve modes')
+    parser.add_argument('--sample-budget', type=int, default=None,
+                        help='Sample budget (default: budget_low from exploration thresholds)')
     parser.add_argument('--lr', type=float, default=0.1,
                         help='Learning rate')
     parser.add_argument('--seed', type=int, default=0,
@@ -263,7 +263,10 @@ def main():
 
     goals = _build_goals(args.grid_size, args.n_goals)
     teacher_capacities = _parse_teacher_capacities(args.teacher_capacities, args.n_goals)
-    horizon = args.horizon if args.horizon else 10 * args.grid_size
+    thresholds = compute_exploration_thresholds(args.grid_size)
+    horizon = args.horizon if args.horizon else thresholds['horizon_small']
+    if args.sample_budget is None:
+        args.sample_budget = thresholds['budget_low']
 
     zeta_values = None
     if args.zeta_values:
@@ -367,6 +370,20 @@ def main():
         )
         print(f"Improved learning curve figure saved to {improved_path}")
 
+        # Exact V^π(s0) learning curves — zero-variance evaluation
+        exact_path = args.learning_curve_output.replace('.png', '_exact_V.png')
+        plot_learning_curves(
+            histories,
+            title=f"Exact V^π(start) by Teacher Capacity\n"
+                  f"(alpha={args.alpha}, grid={args.grid_size}x{args.grid_size}, "
+                  f"budget={sample_budget})",
+            ylabel="V^π(start)",
+            metric="exact_V_start",
+            smooth_window=1,
+            save_path=exact_path,
+        )
+        print(f"Exact V learning curve figure saved to {exact_path}")
+
     elif args.mode == '2x2_zeta':
         if os.path.dirname(args.zeta_output):
             os.makedirs(os.path.dirname(args.zeta_output), exist_ok=True)
@@ -435,6 +452,20 @@ def main():
             save_path=improved_path,
         )
         print(f"Improved learning curve figure saved to {improved_path}")
+
+        # Exact V^π(s0) learning curves — zero-variance evaluation
+        exact_path = args.zeta_learning_curve_output.replace('.png', '_exact_V.png')
+        plot_learning_curves(
+            histories,
+            title=f"Exact V^π(start) by Teacher ζ\n"
+                  f"(alpha={args.alpha}, grid={args.grid_size}x{args.grid_size}, "
+                  f"budget={args.sample_budget})",
+            ylabel="V^π(start)",
+            metric="exact_V_start",
+            smooth_window=1,
+            save_path=exact_path,
+        )
+        print(f"Exact V learning curve figure saved to {exact_path}")
 
     elif args.mode == 'analyze2x2':
         import pandas as pd
