@@ -53,7 +53,7 @@ pytest tests/test_run_experiments.py -v
 | `--grid-size` | 8 | N×N grid dimensions |
 | `--n-goals` | 3 | Number of goal states |
 | `--horizon` | 10×grid_size | Max episode length |
-| `--n-seeds` | 5-10 | Random seeds for averaging |
+| `--n-seeds` | 30 | Random seeds for averaging (30 for smooth learning curves) |
 
 ## Architecture
 
@@ -65,14 +65,14 @@ The core algorithm augments standard policy gradient with a teacher advantage si
 grad J = E[∇_π log π(a|s) * (Q^π(s,a) + α * A^μ(s,a))]
 ```
 
-Where `Q^π` is the student's Monte Carlo return and `A^μ = Q^μ - V^μ` is the teacher's advantage.
+Where `Q^π` is the student's exact action-value (computed via Bellman policy evaluation each update, not Monte Carlo) and `A^μ = Q^μ - V^μ` is the teacher's advantage.
 
 ### Module Responsibilities
 
 - **`tabular_prototype/environment.py`** — `GridEnv`: N×N grid with goals (reward=1), traps (reward=0), absorbing states. Student starts at center.
 - **`tabular_prototype/teacher.py`** — Computes fixed `Q^μ(s,a)` and `V^μ(s)` via value iteration based on which goals the teacher "knows" (its capacity). Never updated during training.
 - **`tabular_prototype/student.py`** — `TabularSoftmaxPolicy`: trainable `θ[state, action]` parameters, trajectory collection.
-- **`tabular_prototype/training.py`** — PAV-RL gradient computation and policy updates.
+- **`tabular_prototype/training.py`** — PAV-RL gradient computation, exact Q^π via Bellman policy evaluation (`compute_student_qvalues`), state-action visitation tracking (`compute_state_action_visitation`, `visitation_metrics`), and policy updates.
 - **`tabular_prototype/experiments.py`** — Experiment orchestration: `run_experiment()`, `run_2x2_exploration_experiment()`, `run_learning_curve_experiment()`, `run_experiment_suite()`.
 - **`tabular_prototype/visualization.py`** — Policy grids, advantage heatmaps, learning curves, result bar charts.
 - **`tabular_prototype/config.py`** — Discount factor: `γ = 1 - 1/H` (makes value functions time-invariant).

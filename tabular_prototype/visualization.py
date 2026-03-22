@@ -395,11 +395,67 @@ def visualize_advantage_grid(
 
 
 # =============================================================================
+# State-Action Visitation Heatmap
+# =============================================================================
+
+def visualize_state_visitation(
+    env: GridEnv,
+    visitation_counts: np.ndarray,
+    title: str = "State Visitation",
+    goals: Optional[List[Tuple[int, int]]] = None,
+    save_path: Optional[str] = None,
+) -> Any:
+    """
+    Heatmap of state visitation (summed over actions).
+
+    Args:
+        visitation_counts: shape (n_states, n_actions) — raw visit counts.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+
+    state_visits = visitation_counts.sum(axis=1)
+    grid = state_visits.reshape(env.grid_size, env.grid_size)
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    im = ax.imshow(grid, cmap='hot', origin='upper')
+    plt.colorbar(im, ax=ax, label='Visit Count')
+
+    start = env.start
+    ax.add_patch(patches.Circle((start[1], start[0]), 0.3,
+                                fill=True, color='cyan', alpha=0.8))
+    ax.text(start[1], start[0], 'S', ha='center', va='center',
+            color='black', fontweight='bold', fontsize=10)
+
+    if goals:
+        for goal in goals:
+            ax.add_patch(patches.Rectangle((goal[1]-0.4, goal[0]-0.4), 0.8, 0.8,
+                                           fill=False, edgecolor='lime',
+                                           linewidth=2.5))
+            ax.text(goal[1], goal[0], 'G', ha='center', va='center',
+                    color='lime', fontweight='bold', fontsize=10)
+
+    ax.set_title(title, fontsize=13)
+    ax.set_xlabel('Column')
+    ax.set_ylabel('Row')
+    ax.set_xticks(range(env.grid_size))
+    ax.set_yticks(range(env.grid_size))
+    ax.grid(True, alpha=0.2)
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Visitation figure saved to {save_path}")
+
+    return fig
+
+
+# =============================================================================
 # 2x2 Experiment Plot
 # =============================================================================
 
 def plot_2x2_results(results_file: str = 'results/exploration_2x2_results.csv'):
-    """Create bar-chart visualization for 2x2 experiment."""
+    """Create bar-chart visualization for 2x2 experiment with visitation metrics."""
     import matplotlib.pyplot as plt
     import matplotlib.cm as cm
     import pandas as pd
@@ -413,7 +469,7 @@ def plot_2x2_results(results_file: str = 'results/exploration_2x2_results.csv'):
         ('high', 'large'),
     ]
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 
     for ax, (budget_type, horizon_type) in zip(axes.flat, conditions):
         cond_df = df[(df['budget_type'] == budget_type) & (df['horizon_type'] == horizon_type)]
@@ -430,17 +486,25 @@ def plot_2x2_results(results_file: str = 'results/exploration_2x2_results.csv'):
                  f"{horizon_type.title()} Horizon ({actual_horizon})")
 
         teacher_caps = sorted(cond_df['teacher_capacity'].unique())
-        means = []
-        stderrs = []
+        means, stderrs, usa_means, sent_means = [], [], [], []
 
         for cap in teacher_caps:
-            cap_data = cond_df[cond_df['teacher_capacity'] == cap]['final_mean_reward']
-            if len(cap_data) > 0:
-                means.append(cap_data.mean())
-                stderrs.append(cap_data.std() / np.sqrt(len(cap_data)))
+            cap_data = cond_df[cond_df['teacher_capacity'] == cap]
+            reward_data = cap_data['final_mean_reward']
+            if len(reward_data) > 0:
+                means.append(reward_data.mean())
+                stderrs.append(reward_data.std() / np.sqrt(len(reward_data)))
             else:
                 means.append(0)
                 stderrs.append(0)
+            if 'final_unique_sa' in cap_data.columns:
+                usa_means.append(cap_data['final_unique_sa'].mean())
+            else:
+                usa_means.append(0)
+            if 'final_state_entropy' in cap_data.columns:
+                sent_means.append(cap_data['final_state_entropy'].mean())
+            else:
+                sent_means.append(0)
 
         n_caps = len(teacher_caps)
         colors = cm.viridis(np.linspace(0.2, 0.8, n_caps))
@@ -448,9 +512,16 @@ def plot_2x2_results(results_file: str = 'results/exploration_2x2_results.csv'):
         bars = ax.bar(teacher_caps, means, yerr=stderrs, capsize=5,
                       color=colors, alpha=0.8)
 
+        # Annotate bars with visitation metrics
+        for i, (bar, usa, sent) in enumerate(zip(bars, usa_means, sent_means)):
+            y = bar.get_height() + stderrs[i] + 0.01
+            ax.text(bar.get_x() + bar.get_width() / 2, y,
+                    f"SA={usa:.0f}\nH={sent:.2f}",
+                    ha='center', va='bottom', fontsize=7, color='#333333')
+
         ax.set_xlabel('Teacher Setting')
         ax.set_ylabel('Mean Reward')
-        ax.set_ylim(0, 1)
+        ax.set_ylim(0, min(1.15, max(means) + 0.15) if means else 1)
         ax.set_title(title)
         ax.set_xticks(teacher_caps)
         ax.set_xticklabels([_capacity_label(cap) for cap in teacher_caps], rotation=30, ha='right')
@@ -461,7 +532,9 @@ def plot_2x2_results(results_file: str = 'results/exploration_2x2_results.csv'):
             bars[best_idx].set_edgecolor('black')
             bars[best_idx].set_linewidth(2)
 
-    plt.suptitle('2x2 Exploration Experiment: Budget x Horizon', fontsize=14, y=1.02)
+    plt.suptitle('2x2 Exploration Experiment: Budget x Horizon\n'
+                 '(SA = unique state-actions visited, H = state entropy)',
+                 fontsize=14, y=1.02)
     plt.tight_layout()
 
     output_path = results_file.replace('.csv', '.png')
@@ -477,7 +550,7 @@ def plot_2x2_results(results_file: str = 'results/exploration_2x2_results.csv'):
 # =============================================================================
 
 def plot_2x2_results_zeta(results_file: str = 'results/exploration_2x2_zeta_results.csv'):
-    """Bar-chart visualization for 2x2 zeta experiment."""
+    """Bar-chart visualization for 2x2 zeta experiment with visitation metrics."""
     import matplotlib.pyplot as plt
     import matplotlib.cm as cm
     import pandas as pd
@@ -491,7 +564,7 @@ def plot_2x2_results_zeta(results_file: str = 'results/exploration_2x2_zeta_resu
         ('high', 'large'),
     ]
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 
     for ax, (budget_type, horizon_type) in zip(axes.flat, conditions):
         cond_df = df[(df['budget_type'] == budget_type) & (df['horizon_type'] == horizon_type)]
@@ -507,21 +580,38 @@ def plot_2x2_results_zeta(results_file: str = 'results/exploration_2x2_zeta_resu
                  f"{horizon_type.title()} Horizon ({actual_horizon})")
 
         zeta_vals = sorted(cond_df['zeta'].unique())
-        means, stderrs = [], []
+        means, stderrs, usa_means, sent_means = [], [], [], []
 
         for z in zeta_vals:
-            data = cond_df[cond_df['zeta'] == z]['final_mean_reward']
-            means.append(data.mean())
-            stderrs.append(data.std() / np.sqrt(len(data)) if len(data) > 1 else 0)
+            z_data = cond_df[cond_df['zeta'] == z]
+            reward_data = z_data['final_mean_reward']
+            means.append(reward_data.mean())
+            stderrs.append(reward_data.std() / np.sqrt(len(reward_data)) if len(reward_data) > 1 else 0)
+            if 'final_unique_sa' in z_data.columns:
+                usa_means.append(z_data['final_unique_sa'].mean())
+            else:
+                usa_means.append(0)
+            if 'final_state_entropy' in z_data.columns:
+                sent_means.append(z_data['final_state_entropy'].mean())
+            else:
+                sent_means.append(0)
 
         n_z = len(zeta_vals)
         colors = cm.viridis(np.linspace(0.2, 0.8, n_z))
         x_pos = np.arange(n_z)
 
         bars = ax.bar(x_pos, means, yerr=stderrs, capsize=5, color=colors, alpha=0.8)
+
+        # Annotate bars with visitation metrics
+        for i, (bar, usa, sent) in enumerate(zip(bars, usa_means, sent_means)):
+            y = bar.get_height() + stderrs[i] + 0.01
+            ax.text(bar.get_x() + bar.get_width() / 2, y,
+                    f"SA={usa:.0f}\nH={sent:.2f}",
+                    ha='center', va='bottom', fontsize=7, color='#333333')
+
         ax.set_xlabel('Teacher ζ')
         ax.set_ylabel('Mean Reward')
-        ax.set_ylim(0, 1)
+        ax.set_ylim(0, min(1.15, max(means) + 0.15) if means else 1)
         ax.set_title(title)
         ax.set_xticks(x_pos)
         ax.set_xticklabels([f"ζ={z:.2f}" for z in zeta_vals], rotation=30, ha='right')
@@ -532,7 +622,8 @@ def plot_2x2_results_zeta(results_file: str = 'results/exploration_2x2_zeta_resu
             bars[best_idx].set_edgecolor('black')
             bars[best_idx].set_linewidth(2)
 
-    plt.suptitle('2x2 Exploration Experiment (ζ parameterisation): Budget × Horizon',
+    plt.suptitle('2x2 Exploration Experiment (ζ parameterisation): Budget × Horizon\n'
+                 '(SA = unique state-actions visited, H = state entropy)',
                  fontsize=14, y=1.02)
     plt.tight_layout()
 
