@@ -26,7 +26,6 @@ from tabular_prototype import (
     compute_teacher_values_auto,
     compute_uniform_random_teacher_values_auto,
     compute_mixture_teacher_values_auto,
-    sample_uniform_random_teacher_knowledge,
     compute_exploration_thresholds,
     visualize_teacher_policy,
     visualize_advantage_grid,
@@ -115,21 +114,13 @@ def visualize_suite_advantages(
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             plt.close(fig)
         elif teacher_cap == 0:
-            sampled_goals, sampled_traps = sample_uniform_random_teacher_knowledge(env)
-            print(f"[debug cap=0] sampled imagined goals: {sampled_goals}")
-            print(f"[debug cap=0] sampled imagined traps: {sampled_traps}")
-            Q_mu, V_mu, gamma = compute_uniform_random_teacher_values_auto(
-                env,
-                known_goals=sampled_goals,
-                known_traps=sampled_traps,
-                debug_print=True,
-            )
+            Q_mu, V_mu, gamma = compute_uniform_random_teacher_values_auto(env)
             visualize_advantage_grid(
                 env, Q_mu, V_mu,
                 title=f"Teacher Advantage (uniform-random, cap={teacher_cap}, "
                       f"gamma={gamma:.3f})",
-                goals=sampled_goals,
-                traps=sampled_traps,
+                goals=env.goals,
+                traps=env.traps,
                 save_path=save_path,
             )
         else:
@@ -212,8 +203,8 @@ def main():
                         help='Grid size for 2x2 experiment')
     parser.add_argument('--n-seeds', type=int, default=5,
                         help='Number of random seeds (exact V^π eval is variance-free)')
-    parser.add_argument('--n-goals', type=int, default=3,
-                        help='Number of goals in the environment')
+    parser.add_argument('--n-goals', type=int, default=None,
+                        help='Number of goals (default: 1 for zeta modes, 3 otherwise)')
     parser.add_argument('--alpha', type=float, default=0.5,
                         help='Weight for teacher advantage in PAV-RL')
     parser.add_argument('--output', type=str, default='results/exploration_2x2_results.csv',
@@ -253,6 +244,13 @@ def main():
                         help='Output path for zeta learning-curve figure')
 
     args = parser.parse_args()
+
+    # Mode-dependent default for n_goals
+    if args.n_goals is None:
+        if args.mode in ('2x2_zeta', 'learning_curve_zeta', 'plot2x2_zeta'):
+            args.n_goals = 1
+        else:
+            args.n_goals = 3
 
     os.makedirs('results', exist_ok=True)
     os.makedirs(args.figures_dir, exist_ok=True)

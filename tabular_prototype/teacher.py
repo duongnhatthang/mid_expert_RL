@@ -78,49 +78,110 @@ def _solve_discounted_values(
     return Q, V
 
 
-def _sample_uniform_random_teacher_knowledge(
+def evaluate_policy_values(
     env: GridEnv,
-    n_goals: int,
-    n_traps: int,
-    rng: Optional[np.random.Generator] = None,
-) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    policy_probs: np.ndarray,
+    gamma: float,
+    tol: float = 1e-6,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Sample random known-goal and known-trap sets uniformly from non-start states.
+    Evaluate Q^pi and V^pi for an explicit policy matrix in the TRUE MDP.
 
-    Counts are inferred from environment unless explicitly overridden by caller.
+    Args:
+        env:          GridEnv instance (uses env.goals, env.traps for the true MDP).
+        policy_probs: shape (n_states, n_actions) — pi(a|s) probability matrix.
+        gamma:        discount factor.
+        tol:          convergence tolerance.
+
+    Returns:
+        Q: shape (n_states, n_actions)
+        V: shape (n_states,)
     """
-    rng = rng or np.random.default_rng(0 if env.seed is None else env.seed)
-    candidates = [
-        env.idx_to_state(i)
-        for i in range(env.n_states)
-        if env.idx_to_state(i) != env.start
-    ]
-    total_needed = min(n_goals + n_traps, len(candidates))
-    if total_needed <= 0:
-        return [], []
+    T = _build_transition_model(env)
+    R_true = _build_reward_matrix(env, env.goals)
+    absorbing_true = _build_absorbing_state_indices(env, env.goals, env.traps)
 
-    selected_idx = rng.choice(len(candidates), size=total_needed, replace=False)
-    selected = [candidates[i] for i in selected_idx]
-    goals = selected[:min(n_goals, len(selected))]
-    traps = selected[min(n_goals, len(selected)):min(n_goals + n_traps, len(selected))]
-    return goals, traps
+    def policy_aggregate(Q: np.ndarray) -> np.ndarray:
+        return (policy_probs * Q).sum(axis=1)
+
+    return _solve_discounted_values(T, R_true, absorbing_true, gamma, policy_aggregate, tol)
 
 
-def sample_uniform_random_teacher_knowledge(
+def build_optimal_policy(
     env: GridEnv,
-    rng: Optional[np.random.Generator] = None,
-) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    known_goals: List[Tuple[int, int]],
+    gamma: float,
+    tol: float = 1e-6,
+    known_traps: Optional[List[Tuple[int, int]]] = None,
+) -> np.ndarray:
     """
-    Public helper to sample imagined goals/traps for cap=0 teachers.
+    Build deterministic (one-hot) greedy policy optimal w.r.t. known_goals.
 
-    Uses counts inferred from the environment.
+    Returns:
+        policy_probs: shape (n_states, n_actions) — one-hot on argmax Q*.
     """
-    return _sample_uniform_random_teacher_knowledge(
-        env,
-        n_goals=len(env.goals),
-        n_traps=len(env.traps),
-        rng=rng,
+    known_traps = known_traps or []
+    T = _build_transition_model(env)
+    R_known = _build_reward_matrix(env, known_goals)
+    absorbing_known = _build_absorbing_state_indices(env, known_goals, known_traps)
+    Q_known, _ = _solve_discounted_values(
+        T, R_known, absorbing_known, gamma,
+        aggregate_fn=lambda q: q.max(axis=1),
+        tol=tol,
     )
+    optimal_actions = Q_known.argmax(axis=1)
+    n_states, n_actions = Q_known.shape
+    policy_probs = np.zeros((n_states, n_actions))
+    policy_probs[np.arange(n_states), optimal_actions] = 1.0
+    return policy_probs
+
+
+def build_uniform_policy(n_states: int, n_actions: int) -> np.ndarray:
+    """
+    Build uniform random policy: pi(a|s) = 1/|A| for all s, a.
+
+    Returns:
+        policy_probs: shape (n_states, n_actions).
+    """
+    return np.full((n_states, n_actions), 1.0 / n_actions)
+
+
+def build_mixture_policy(
+    env: GridEnv,
+    zeta: float,
+    gamma: float,
+    tol: float = 1e-6,
+) -> np.ndarray:
+    """
+    Build mixture policy: pi(a|s) = zeta * I[a = a*(s)] + (1 - zeta) / |A|.
+
+    a*(s) = argmax_a Q*(s,a) w.r.t. all TRUE goals (env.goals).
+
+    Args:
+        env:   GridEnv instance.
+        zeta:  mixture weight in [0, 1]  (0 = pure random, 1 = pure optimal).
+        gamma: discount factor.
+        tol:   convergence tolerance.
+
+    Returns:
+        policy_probs: shape (n_states, n_actions).
+    """
+    n_actions = env.n_actions
+    T = _build_transition_model(env)
+    R_true = _build_reward_matrix(env, env.goals)
+    absorbing_true = _build_absorbing_state_indices(env, env.goals, env.traps)
+    Q_star, _ = _solve_discounted_values(
+        T, R_true, absorbing_true, gamma,
+        aggregate_fn=lambda q: q.max(axis=1),
+        tol=tol,
+    )
+    optimal_actions = Q_star.argmax(axis=1)
+
+    n_states = env.n_states
+    policy_probs = np.full((n_states, n_actions), (1.0 - zeta) / n_actions)
+    policy_probs[np.arange(n_states), optimal_actions] += zeta
+    return policy_probs
+
 
 
 def compute_teacher_values(
@@ -148,74 +209,23 @@ def compute_teacher_values(
         Q: shape (n_states, n_actions) — evaluated under true environment
         V: shape (n_states,)           — evaluated under true environment
     """
-    known_traps = known_traps or []
-    T = _build_transition_model(env)
-
-    # Step 1: solve for optimal policy w.r.t. known goals
-    R_known = _build_reward_matrix(env, known_goals)
-    absorbing_known = _build_absorbing_state_indices(env, known_goals, known_traps)
-    Q_known, _ = _solve_discounted_values(
-        T,
-        R_known,
-        absorbing_known,
-        gamma,
-        aggregate_fn=lambda q: q.max(axis=1),
-        tol=tol,
-    )
-
-    # Step 2: fix the greedy policy derived from Q_known
-    optimal_actions = Q_known.argmax(axis=1)
-
-    # Step 3: evaluate that fixed policy in the true environment
-    R_true = _build_reward_matrix(env, env.goals)
-    absorbing_true = _build_absorbing_state_indices(env, env.goals, env.traps)
-    return _solve_discounted_values(
-        T,
-        R_true,
-        absorbing_true,
-        gamma,
-        aggregate_fn=lambda q: q[np.arange(len(q)), optimal_actions],
-        tol=tol,
-    )
+    policy_probs = build_optimal_policy(env, known_goals, gamma, tol, known_traps)
+    return evaluate_policy_values(env, policy_probs, gamma, tol)
 
 
 def compute_uniform_random_teacher_values(
     env: GridEnv,
     gamma: float = 0.99,
     tol: float = 1e-6,
-    known_goals: Optional[List[Tuple[int, int]]] = None,
-    known_traps: Optional[List[Tuple[int, int]]] = None,
-    debug_print: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Compute Q^mu and V^mu for a uniform-random teacher policy (gamma < 1).
 
-    If known_goals/known_traps are not provided, sample random goals/traps
-    uniformly from the state space using counts from the environment.
+    The teacher acts uniformly at random: pi(a|s) = 1/|A|.
+    Q and V are evaluated in the TRUE MDP (env.goals, env.traps).
     """
-    if known_goals is None or known_traps is None:
-        sampled_goals, sampled_traps = sample_uniform_random_teacher_knowledge(env)
-        goals = sampled_goals if known_goals is None else known_goals
-        traps = sampled_traps if known_traps is None else known_traps
-    else:
-        goals = known_goals
-        traps = known_traps
-
-    if debug_print:
-        print(f"[uniform_teacher] sampled/used goals: {goals}")
-        print(f"[uniform_teacher] sampled/used traps: {traps}")
-
-    T = _build_transition_model(env)
-    R = _build_reward_matrix(env, goals)
-    absorbing_states = _build_absorbing_state_indices(env, goals, traps)
-    return _solve_discounted_values(
-        T,
-        R,
-        absorbing_states,
-        gamma,
-        aggregate_fn=lambda q: q.max(axis=1),
-        tol=tol,
-    )
+    policy_probs = build_uniform_policy(env.n_states, env.n_actions)
+    return evaluate_policy_values(env, policy_probs, gamma, tol)
 
 
 def compute_teacher_values_auto(
@@ -238,23 +248,14 @@ def compute_teacher_values_auto(
 
 def compute_uniform_random_teacher_values_auto(
     env: GridEnv,
-    known_goals: Optional[List[Tuple[int, int]]] = None,
-    known_traps: Optional[List[Tuple[int, int]]] = None,
     gamma: Optional[float] = None,
-    debug_print: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Compute uniform-random teacher values with automatic gamma from horizon.
     """
     if gamma is None:
         gamma = compute_gamma_from_horizon(env.horizon)
-    Q, V = compute_uniform_random_teacher_values(
-        env,
-        gamma,
-        known_goals=known_goals,
-        known_traps=known_traps,
-        debug_print=debug_print,
-    )
+    Q, V = compute_uniform_random_teacher_values(env, gamma)
     return Q, V, gamma
 
 
@@ -272,13 +273,6 @@ def get_teacher_advantage(
     return Q_mu[state_idx, action] - V_mu[state_idx]
 
 
-def get_teacher_policy(Q_mu: np.ndarray, temperature: float = 0.1) -> np.ndarray:
-    """Softmax policy from Q-values for imitation learning."""
-    logits = Q_mu / temperature
-    logits = logits - logits.max(axis=1, keepdims=True)
-    exp_logits = np.exp(logits)
-    return exp_logits / exp_logits.sum(axis=1, keepdims=True)
-
 
 def compute_mixture_teacher_values(
     env: GridEnv,
@@ -289,14 +283,11 @@ def compute_mixture_teacher_values(
     """
     Compute Q^mu and V^mu for a mixture teacher policy mu(zeta).
 
-    mu(zeta) takes the optimal action with probability zeta and a
-    uniformly random action with probability (1-zeta) — i.e. a coin
-    flip at each step:
-        a ~ mu(zeta | s)  =>  a = a*(s) w.p. zeta, else Uniform(actions)
+    mu(zeta)(a|s) = zeta * I[a = a*(s)] + (1 - zeta) / |A|
 
-    Q^mu and V^mu are evaluated by rolling out mu(zeta) in the TRUE MDP
-    (using env.goals / env.traps).  The Bellman aggregate is:
-        V^mu(s) = zeta * Q^mu(s, a*(s)) + (1-zeta)/n_actions * sum_a Q^mu(s,a)
+    where a*(s) = argmax_a Q*(s,a) w.r.t. all true goals.
+
+    Returns true V^mu(s) = sum_a mu(a|s) Q^mu(s,a).
 
     Args:
         env:   GridEnv instance
@@ -308,48 +299,8 @@ def compute_mixture_teacher_values(
         Q: shape (n_states, n_actions)
         V: shape (n_states,)
     """
-    T = _build_transition_model(env)
-    R_true = _build_reward_matrix(env, env.goals)
-    absorbing_true = _build_absorbing_state_indices(env, env.goals, env.traps)
-
-    # Step 1: compute the optimal policy w.r.t. ALL true goals
-    Q_star, _ = _solve_discounted_values(
-        T, R_true, absorbing_true, gamma,
-        aggregate_fn=lambda q: q.max(axis=1),
-        tol=tol,
-    )
-    optimal_actions = Q_star.argmax(axis=1)  # shape (n_states,)
-
-    # Step 2: evaluate the mixture policy in the true MDP.
-    # The Bellman contraction uses the mixture policy's expected value so that
-    # Q^mu(s,a) correctly reflects "take action a then follow mu(zeta) forever."
-    def mixture_aggregate(Q: np.ndarray) -> np.ndarray:
-        n_states = Q.shape[0]
-        V_opt = Q[np.arange(n_states), optimal_actions]
-        V_rand = Q.mean(axis=1)
-        return zeta * V_opt + (1.0 - zeta) * V_rand
-
-    Q, _ = _solve_discounted_values(
-        T, R_true, absorbing_true, gamma,
-        aggregate_fn=mixture_aggregate,
-        tol=tol,
-    )
-
-    # Use the uniform-random baseline for the ADVANTAGE V so that
-    # A^mu(s,a) = Q^mu(s,a) - mean_a Q^mu(s,a).
-    #
-    # Why: the mixture policy value V^mu(s) = zeta*Q(s,a*) + (1-zeta)*mean Q,
-    # which makes A(s,a*) = (1-zeta)*[Q(s,a*) - mean Q] → 0 as zeta → 1.
-    # At zeta=1 the optimal action has ZERO advantage — only bad actions are
-    # penalised, never the right action rewarded — so the teacher signal is
-    # entirely one-sided and weaker than the random teacher (zeta=0).
-    #
-    # With the random-policy baseline, A(s,a*) = Q^mu(s,a*) - mean Q^mu > 0
-    # for all zeta in (0,1], and the spread grows with zeta (better policy →
-    # larger Q* spread around the mean), giving stronger signal for better
-    # teachers.
-    V_baseline = Q.mean(axis=1)
-    return Q, V_baseline
+    policy_probs = build_mixture_policy(env, zeta, gamma, tol)
+    return evaluate_policy_values(env, policy_probs, gamma, tol)
 
 
 def compute_mixture_teacher_values_auto(

@@ -11,7 +11,6 @@ from .teacher import (
     compute_teacher_values_auto,
     compute_uniform_random_teacher_values_auto,
     compute_mixture_teacher_values_auto,
-    sample_uniform_random_teacher_knowledge,
 )
 from .student import TabularSoftmaxPolicy, collect_trajectories
 from .training import (
@@ -55,10 +54,7 @@ def run_experiment(
         Q_mu, V_mu = None, None
         gamma = compute_gamma_from_horizon(horizon)
     elif teacher_capacity == 0:
-        known_goals, known_traps = sample_uniform_random_teacher_knowledge(env, rng=rng)
-        Q_mu, V_mu, gamma = compute_uniform_random_teacher_values_auto(
-            env, known_goals=known_goals, known_traps=known_traps
-        )
+        Q_mu, V_mu, gamma = compute_uniform_random_teacher_values_auto(env)
     else:
         known_goals = goals[:teacher_capacity]
         Q_mu, V_mu, gamma = compute_teacher_values_auto(env, known_goals)
