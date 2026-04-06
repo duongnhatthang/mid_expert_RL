@@ -450,6 +450,117 @@ def visualize_state_visitation(
     return fig
 
 
+def visualize_visitation_comparison_grid(
+    env: GridEnv,
+    visitation_data: dict,
+    row_keys: list,
+    col_keys: list,
+    row_label_fn,
+    col_label_fn,
+    goals: Optional[List[Tuple[int, int]]] = None,
+    suptitle: str = "State Visitation Comparison",
+    save_path: Optional[str] = None,
+) -> Any:
+    """
+    Multi-panel heatmap comparing state visitation across teacher settings and conditions.
+
+    Args:
+        env:              GridEnv instance (for grid_size, start position).
+        visitation_data:  Dict mapping (row_key, col_key) -> np.ndarray (n_states, n_actions).
+        row_keys:         Ordered list of row keys (e.g. zeta values or teacher capacities).
+        col_keys:         Ordered list of column keys (e.g. (budget_type, horizon_type) tuples).
+        row_label_fn:     Callable: row_key -> display string for row labels.
+        col_label_fn:     Callable: col_key -> display string for column headers.
+        goals:            Goal positions for annotation.
+        suptitle:         Figure title.
+        save_path:        If provided, save figure to this path.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+
+    n_rows = len(row_keys)
+    n_cols = len(col_keys)
+    cell_size = 2.5
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(cell_size * n_cols + 1.5, cell_size * n_rows + 1.2),
+        squeeze=False,
+    )
+
+    # Compute shared color scale
+    vmax = 0
+    grids = {}
+    for rk in row_keys:
+        for ck in col_keys:
+            vis = visitation_data.get((rk, ck))
+            if vis is not None:
+                state_visits = vis.sum(axis=1)
+                grid = state_visits.reshape(env.grid_size, env.grid_size)
+                grids[(rk, ck)] = grid
+                vmax = max(vmax, grid.max())
+    if vmax == 0:
+        vmax = 1
+
+    mappable = None
+    for i, rk in enumerate(row_keys):
+        for j, ck in enumerate(col_keys):
+            ax = axes[i, j]
+            grid = grids.get((rk, ck))
+
+            if grid is None:
+                ax.text(0.5, 0.5, 'N/A', ha='center', va='center',
+                        transform=ax.transAxes, fontsize=11, color='gray')
+                ax.set_xticks([])
+                ax.set_yticks([])
+            else:
+                im = ax.imshow(grid, cmap='hot', origin='upper', vmin=0, vmax=vmax)
+                mappable = im
+
+                # Mark start
+                start = env.start
+                ax.add_patch(patches.Circle(
+                    (start[1], start[0]), 0.25,
+                    fill=True, color='cyan', alpha=0.8, linewidth=0,
+                ))
+                ax.text(start[1], start[0], 'S', ha='center', va='center',
+                        color='black', fontweight='bold', fontsize=7)
+
+                # Mark goals
+                if goals:
+                    for goal in goals:
+                        ax.add_patch(patches.Rectangle(
+                            (goal[1] - 0.35, goal[0] - 0.35), 0.7, 0.7,
+                            fill=False, edgecolor='lime', linewidth=1.5,
+                        ))
+                        ax.text(goal[1], goal[0], 'G', ha='center', va='center',
+                                color='lime', fontweight='bold', fontsize=7)
+
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+            # Row label on leftmost column
+            if j == 0:
+                ax.set_ylabel(row_label_fn(rk), fontsize=9)
+
+            # Column header on top row
+            if i == 0:
+                ax.set_title(col_label_fn(ck), fontsize=9)
+
+    # Shared colorbar
+    if mappable is not None:
+        fig.colorbar(mappable, ax=axes.ravel().tolist(), shrink=0.8, label='Visit Count')
+
+    fig.suptitle(suptitle, fontsize=13, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 0.92, 0.95])
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Visitation comparison grid saved to {save_path}")
+
+    plt.close(fig)
+    return fig
+
+
 # =============================================================================
 # 2x2 Experiment Plot
 # =============================================================================

@@ -21,7 +21,7 @@ from .training import (
     compute_state_action_visitation,
     visitation_metrics,
 )
-from .visualization import visualize_state_visitation
+from .visualization import visualize_state_visitation, visualize_visitation_comparison_grid
 
 
 def run_experiment(
@@ -241,6 +241,53 @@ def _save_visitation_heatmaps(
     print(f"Visitation heatmaps saved: {len(groups)} files in {vis_dir}/")
 
 
+def _save_visitation_comparison_grid(
+    all_results: List[Dict],
+    env: GridEnv,
+    goals: List[Tuple[int, int]],
+    figures_dir: str,
+    teacher_key: str = 'teacher_capacity',
+):
+    """
+    Save a single multi-panel figure comparing visitation across teacher
+    settings (rows) and budget×horizon conditions (columns).
+    """
+    from collections import defaultdict
+
+    # Group and average visitation across seeds
+    groups: Dict[tuple, List[np.ndarray]] = defaultdict(list)
+    for r in all_results:
+        key = (r[teacher_key], (r['budget_type'], r['horizon_type']))
+        if 'visitation_counts' in r:
+            groups[key].append(r['visitation_counts'])
+
+    visitation_data = {}
+    for (teacher_val, cond), vis_list in groups.items():
+        visitation_data[(teacher_val, cond)] = np.mean(vis_list, axis=0)
+
+    # Build ordered keys
+    row_keys = sorted(set(k[0] for k in visitation_data.keys()),
+                      key=lambda x: (isinstance(x, float), x))
+    col_keys = [('low', 'small'), ('low', 'large'), ('high', 'small'), ('high', 'large')]
+
+    if teacher_key == 'zeta':
+        row_label_fn = lambda k: f'ζ={k:.2f}'
+    else:
+        cap_labels = {-1: 'no teacher', 0: 'random'}
+        row_label_fn = lambda k: cap_labels.get(k, f'cap={k}')
+
+    col_label_fn = lambda k: f'{k[0]} budget\n{k[1]} horizon'
+
+    save_path = os.path.join(figures_dir, 'visitation_comparison_grid.png')
+    visualize_visitation_comparison_grid(
+        env, visitation_data, row_keys, col_keys,
+        row_label_fn, col_label_fn,
+        goals=goals,
+        suptitle=f'State Visitation: {teacher_key} × Condition',
+        save_path=save_path,
+    )
+
+
 def run_2x2_exploration_experiment(
     grid_size: int = 8,
     n_seeds: int = 10,
@@ -351,6 +398,9 @@ def run_2x2_exploration_experiment(
     env = GridEnv(grid_size=grid_size, goals=goals,
                   horizon=thresholds['horizon_large'])
     _save_visitation_heatmaps(
+        all_results, env, goals, figures_dir, teacher_key='teacher_capacity'
+    )
+    _save_visitation_comparison_grid(
         all_results, env, goals, figures_dir, teacher_key='teacher_capacity'
     )
 
@@ -604,6 +654,9 @@ def run_2x2_exploration_experiment_zeta(
     env = GridEnv(grid_size=grid_size, goals=goals,
                   horizon=thresholds['horizon_large'])
     _save_visitation_heatmaps(
+        all_results, env, goals, figures_dir, teacher_key='zeta'
+    )
+    _save_visitation_comparison_grid(
         all_results, env, goals, figures_dir, teacher_key='zeta'
     )
 
