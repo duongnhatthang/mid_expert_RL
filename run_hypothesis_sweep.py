@@ -42,7 +42,7 @@ GOAL_POSITIONS = {
 ZETA_VALUES = [0.0, 0.25, 0.5, 0.75, 1.0]
 CAP_VALUES = [-1, 0, 1]
 
-ALPHA_VALUES = [0.5, 2, 5, 10, 50]
+ALPHA_VALUES = [0.0, 0.1, 0.25, 0.5, 0.75, 1.0]
 
 ZETA_BUDGET_VALUES = [1000, 5000, 20000]
 CAP_BUDGET_VALUES = [512, 2048, 5000, 20000]
@@ -82,6 +82,7 @@ def _run_single_experiment(args_tuple):
         seed=seed,
         eval_interval=5,
         eval_n_episodes=50,
+        exact_gradient=True,
     )
     if mode == 'zeta':
         kwargs['zeta'] = teacher_val
@@ -107,9 +108,13 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1) -> l
         teacher_values = CAP_VALUES
         budget_values = CAP_BUDGET_VALUES
 
-    configs = list(itertools.product(
+    configs = []
+    for tv, alpha, budget, h_type, dist, seed in itertools.product(
         teacher_values, ALPHA_VALUES, budget_values, HORIZON_TYPES, DISTANCES, range(n_seeds)
-    ))
+    ):
+        if alpha == 0.0 and tv != teacher_values[0]:
+            continue  # skip redundant alpha=0 runs
+        configs.append((tv, alpha, budget, h_type, dist, seed))
     total = len(configs)
 
     print("=" * 70)
@@ -157,6 +162,18 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1) -> l
 
     elapsed = time.time() - t0
     print(f"  Completed {total} experiments in {elapsed:.1f}s ({total/elapsed:.1f} exp/s)")
+
+    # Replicate alpha=0 results for all teacher values (teacher is irrelevant at alpha=0)
+    tcol = 'zeta' if mode == 'zeta' else 'teacher_capacity'
+    alpha_zero_results = [r for r in all_results if r.get('alpha') == 0.0]
+    for r in list(alpha_zero_results):
+        for tv in teacher_values:
+            if tv != r[tcol]:
+                r_copy = r.copy()
+                r_copy[tcol] = tv
+                # Remove visitation_counts from copy to avoid memory bloat
+                r_copy.pop('visitation_counts', None)
+                all_results.append(r_copy)
 
     # Save CSV
     if mode == 'zeta':
@@ -236,7 +253,10 @@ def plot_heatmaps(df: pd.DataFrame, mode: str, figures_dir: str):
                                     fontsize=7, color='white' if val < pivot.values.max() * 0.7 else 'black')
 
                 ax.set_xticks(range(len(ALPHA_VALUES)))
-                ax.set_xticklabels([str(a) for a in ALPHA_VALUES], fontsize=8)
+                ax.set_xticklabels(
+                    ['NPG' if a == 0.0 else str(a) for a in ALPHA_VALUES],
+                    fontsize=8,
+                )
                 ax.set_yticks(range(len(teacher_vals)))
                 ax.set_yticklabels([_teacher_label(mode, v) for v in teacher_vals], fontsize=8)
 
@@ -322,7 +342,7 @@ def plot_distance_effect(df: pd.DataFrame, mode: str, figures_dir: str):
     n_budgets = len(budget_vals)
     colors = cm.viridis(np.linspace(0.15, 0.85, len(teacher_vals)))
 
-    for alpha in [0.5, 5, 50]:
+    for alpha in [0.0, 0.5, 1.0]:
         alpha_df = df[df['alpha'] == alpha]
         if len(alpha_df) == 0:
             continue
@@ -370,12 +390,11 @@ def plot_distance_effect(df: pd.DataFrame, mode: str, figures_dir: str):
 
 
 def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
-    """Visitation comparison grids for select (budget, horizon, distance) combos.
-    Rows = teacher params, cols = alpha subset {0.5, 5, 50}."""
+    """Visitation comparison grids showing ALL baselines.
+    Rows = teacher params, cols = all alpha values."""
     from collections import defaultdict
 
     tcol = 'zeta' if mode == 'zeta' else 'teacher_capacity'
-    alpha_subset = [0.5, 5, 50]
     budget_vals = sorted(set(r['sample_budget'] for r in all_results))
 
     for dist in DISTANCES:
@@ -385,13 +404,11 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
 
         for budget in budget_vals:
             for h_type in HORIZON_TYPES:
-                # Group and average visitation by (teacher_val, alpha)
                 groups = defaultdict(list)
                 for r in all_results:
                     if (r.get('distance') == dist and
                         r.get('sample_budget') == budget and
                         r.get('horizon_type') == h_type and
-                        r.get('alpha') in alpha_subset and
                         'visitation_counts' in r):
                         groups[(r[tcol], r['alpha'])].append(r['visitation_counts'])
 
@@ -401,14 +418,15 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 visitation_data = {k: np.mean(v, axis=0) for k, v in groups.items()}
 
                 if mode == 'zeta':
-                    row_keys = ZETA_VALUES
+                    row_keys = sorted(set(k[0] for k in visitation_data))
                     row_label_fn = lambda k: f'ζ={k:.2f}'
                 else:
-                    row_keys = CAP_VALUES
-                    row_label_fn = lambda k: {-1: 'no teacher', 0: 'random'}.get(k, f'cap={k}')
+                    row_keys = sorted(set(k[0] for k in visitation_data))
+                    cap_labels = {-1: 'no teacher', 0: 'random'}
+                    row_label_fn = lambda k: cap_labels.get(k, f'cap={k}')
 
-                col_keys = alpha_subset
-                col_label_fn = lambda a: f'α={a}'
+                col_keys = sorted(set(k[1] for k in visitation_data))
+                col_label_fn = lambda a: 'Vanilla NPG' if a == 0.0 else f'α={a}'
 
                 save_path = os.path.join(
                     figures_dir,
