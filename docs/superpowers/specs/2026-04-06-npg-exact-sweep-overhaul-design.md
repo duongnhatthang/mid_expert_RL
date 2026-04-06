@@ -231,11 +231,12 @@ gs = GridSpec(n_rows, n_cols + 1, width_ratios=[1]*n_cols + [0.05])
 # Plot heatmaps in gs[:, :-1], colorbar in gs[:, -1]
 ```
 
-### 9b. More heatmaps per figure (nested grid)
-Create a larger composite figure:
+### 9b. More heatmaps per figure (nested grid, landscape orientation)
+Create a larger composite figure in **landscape** orientation:
 - Outer grid: configurations (e.g., budget × horizon = 2×2 or more)
 - Inner grid within each outer cell: teacher param rows × alpha columns
 - Use `GridSpecFromSubplotSpec` for nesting
+- Landscape layout: wider than tall, prioritize horizontal space
 - Dynamically size figure based on number of panels
 
 ### 9c. Show all baselines
