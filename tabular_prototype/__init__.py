@@ -51,6 +51,7 @@ from .training import (
     estimate_returns,
     compute_pav_rl_gradient,
     update_policy,
+    exact_npg_update,
     evaluate_policy,
     compute_student_qvalues,
     compute_state_action_visitation,
@@ -102,7 +103,8 @@ __all__ = [
     "NPGPolicy", "TabularSoftmaxPolicy",
     "Transition", "collect_trajectory", "collect_trajectories",
     # training
-    "estimate_returns", "compute_pav_rl_gradient", "update_policy", "evaluate_policy",
+    "estimate_returns", "compute_pav_rl_gradient", "update_policy", "exact_npg_update",
+    "evaluate_policy",
     "compute_student_qvalues", "compute_state_action_visitation", "visitation_metrics",
     # experiments
     "run_experiment", "run_experiment_suite",
