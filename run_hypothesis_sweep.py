@@ -5,7 +5,7 @@ Two modes:
   --mode zeta        Continuous mixture teacher: mu(zeta) = zeta*pi* + (1-zeta)*uniform
   --mode capability  Discrete knowledge teacher: capacity in {-1, 0, 1}
 
-Sweeps alpha, budget, horizon, and goal distance on an 8x8 grid.
+Sweeps alpha, budget, horizon, and goal distance on a 9x9 grid.
 """
 
 import argparse
@@ -23,19 +23,20 @@ from tabular_prototype import (
     compute_exploration_thresholds,
     visualize_visitation_comparison_grid,
 )
+from tabular_prototype.environment import generate_equidistant_goals
 
 # =========================================================================
 # Constants
 # =========================================================================
 
-GRID_SIZE = 8
+GRID_SIZE = 9
 
 # Goal positions at varying Manhattan distances from start (4, 4)
 GOAL_POSITIONS = {
-    1: [(3, 4)],
-    3: [(3, 2)],
-    5: [(1, 2)],
-    7: [(0, 1)],
+    2: generate_equidistant_goals(9, 1, distance=2),
+    4: generate_equidistant_goals(9, 1, distance=4),
+    6: generate_equidistant_goals(9, 1, distance=6),
+    7: generate_equidistant_goals(9, 1, distance=7),
 }
 
 ZETA_VALUES = [0.0, 0.25, 0.5, 0.75, 1.0]

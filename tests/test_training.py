@@ -117,3 +117,52 @@ def test_exact_npg_update_no_teacher(small_env):
 
     expected = theta_before + lr * Q_pi
     np.testing.assert_allclose(policy.theta, expected, atol=1e-12)
+
+
+from tabular_prototype.experiments import run_experiment
+
+
+def test_run_experiment_exact_mode():
+    """Exact mode should run without trajectories, using update steps as budget."""
+    result = run_experiment(
+        grid_size=4,
+        goals=[(3, 3)],
+        teacher_capacity=1,
+        horizon=16,
+        sample_budget=50,
+        alpha=0.5,
+        lr=0.1,
+        seed=0,
+        eval_interval=10,
+        exact_gradient=True,
+    )
+    assert 'final_mean_reward' in result
+    assert 'history' in result
+    assert len(result['history']) > 0
+    assert result['budget_mode'] == 'exact'
+
+
+def test_run_experiment_exact_learns():
+    """Exact mode with teacher should learn on a simple grid."""
+    result_teacher = run_experiment(
+        grid_size=4, goals=[(3, 3)], teacher_capacity=1,
+        horizon=16, sample_budget=200, alpha=0.5, lr=0.1,
+        seed=0, eval_interval=50, exact_gradient=True,
+    )
+    result_vanilla = run_experiment(
+        grid_size=4, goals=[(3, 3)], teacher_capacity=1,
+        horizon=16, sample_budget=200, alpha=0.0, lr=0.1,
+        seed=0, eval_interval=50, exact_gradient=True,
+    )
+    assert result_teacher['final_goal_rate'] > 0.0 or result_vanilla['final_goal_rate'] > 0.0
+
+
+@pytest.mark.parametrize("distance", [2, 4, 6, 7])
+def test_equidistant_goals_9x9(distance):
+    """Verify 3 equidistant goals can be generated at each sweep distance on 9x9."""
+    goals = generate_equidistant_goals(9, 3, distance=distance)
+    assert len(goals) == 3
+    start = (4, 4)
+    for g in goals:
+        assert abs(g[0] - start[0]) + abs(g[1] - start[1]) == distance
+        assert 0 <= g[0] < 9 and 0 <= g[1] < 9

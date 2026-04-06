@@ -199,8 +199,8 @@ def main():
                             '2x2_zeta', 'plot2x2_zeta', 'learning_curve_zeta',
                         ],
                         default='2x2', help='Experiment mode')
-    parser.add_argument('--grid-size', type=int, default=8,
-                        help='Grid size for 2x2 experiment')
+    parser.add_argument('--grid-size', type=int, default=9,
+                        help='Grid size (default 9x9)')
     parser.add_argument('--n-seeds', type=int, default=5,
                         help='Number of random seeds (exact V^π eval is variance-free)')
     parser.add_argument('--n-goals', type=int, default=None,
