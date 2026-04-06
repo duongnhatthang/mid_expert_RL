@@ -166,3 +166,27 @@ def test_equidistant_goals_9x9(distance):
     for g in goals:
         assert abs(g[0] - start[0]) + abs(g[1] - start[1]) == distance
         assert 0 <= g[0] < 9 and 0 <= g[1] < 9
+
+
+def test_learning_curve_saturation():
+    """Learning curve should run with saturation detection."""
+    from tabular_prototype.experiments import run_learning_curve_experiment
+
+    histories = run_learning_curve_experiment(
+        grid_size=4,
+        goals=[(3, 3)],
+        teacher_capacities=[0, 1],
+        horizon=16,
+        alpha=0.5,
+        lr=0.1,
+        n_seeds=2,
+        eval_interval=2,
+        exact_gradient=True,
+        max_budget=500,
+    )
+    assert 0 in histories
+    assert 1 in histories
+    for cap_histories in histories.values():
+        for h in cap_histories:
+            if h:
+                assert 'exact_V_start_undiscounted' in h[0]
