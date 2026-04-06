@@ -190,3 +190,41 @@ def test_learning_curve_saturation():
         for h in cap_histories:
             if h:
                 assert 'exact_V_start_undiscounted' in h[0]
+
+
+def test_full_pipeline_exact_mode():
+    """End-to-end: exact NPG with teacher on small grid converges."""
+    result = run_experiment(
+        grid_size=4,
+        goals=[(3, 3)],
+        teacher_capacity=1,
+        horizon=16,
+        sample_budget=300,
+        alpha=0.5,
+        lr=0.5,
+        seed=0,
+        eval_interval=50,
+        exact_gradient=True,
+    )
+    assert result['final_goal_rate'] > 0.3, (
+        f"Expected goal_rate > 0.3, got {result['final_goal_rate']}"
+    )
+    assert result['budget_mode'] == 'exact'
+
+
+def test_full_pipeline_sample_mode():
+    """End-to-end: sample-based mode with truncation still works."""
+    result = run_experiment(
+        grid_size=4,
+        goals=[(3, 3)],
+        teacher_capacity=1,
+        horizon=16,
+        sample_budget=500,
+        alpha=0.5,
+        lr=0.1,
+        seed=0,
+        eval_interval=5,
+        exact_gradient=False,
+    )
+    assert result['budget_mode'] == 'sample'
+    assert 'final_mean_reward' in result
