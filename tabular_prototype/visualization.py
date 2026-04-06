@@ -477,15 +477,23 @@ def visualize_visitation_comparison_grid(
     """
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
+    from matplotlib.gridspec import GridSpec
 
     n_rows = len(row_keys)
     n_cols = len(col_keys)
     cell_size = 2.5
-    fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(cell_size * n_cols + 1.5, cell_size * n_rows + 1.2),
-        squeeze=False,
+    fig = plt.figure(
+        figsize=(cell_size * n_cols + 2.0, cell_size * n_rows + 1.5)
     )
+    gs = GridSpec(
+        n_rows, n_cols + 1,
+        width_ratios=[1] * n_cols + [0.05],
+        wspace=0.15, hspace=0.25,
+    )
+    axes = np.empty((n_rows, n_cols), dtype=object)
+    for i in range(n_rows):
+        for j in range(n_cols):
+            axes[i, j] = fig.add_subplot(gs[i, j])
 
     # Compute shared color scale
     vmax = 0
@@ -548,10 +556,10 @@ def visualize_visitation_comparison_grid(
 
     # Shared colorbar
     if mappable is not None:
-        fig.colorbar(mappable, ax=axes.ravel().tolist(), shrink=0.8, label='Visit Count')
+        cbar_ax = fig.add_subplot(gs[:, -1])
+        fig.colorbar(mappable, cax=cbar_ax, label='Visit Count')
 
-    fig.suptitle(suptitle, fontsize=13, fontweight='bold')
-    plt.tight_layout(rect=[0, 0, 0.92, 0.95])
+    fig.suptitle(suptitle, fontsize=13, fontweight='bold', y=1.02)
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -757,6 +765,8 @@ def plot_learning_curves(
     metric: str = "mean_reward",
     smooth_window: int = 3,
     save_path: Optional[str] = None,
+    dual_v_mode: bool = False,
+    x_label: Optional[str] = None,
 ) -> Any:
     """
     Plot student learning curves for different teacher capacities on one figure.
@@ -854,25 +864,56 @@ def plot_learning_curves(
         sty = styles[cap]
         label = _capacity_label(cap)
         marker_every = max(1, len(steps_plot) // 8)
-        ax.plot(
-            steps_plot, mean_vals,
-            color=sty["color"],
-            linestyle=sty["linestyle"],
-            marker=sty["marker"],
-            markevery=marker_every,
-            markersize=6,
-            linewidth=2,
-            label=label,
-        )
-        ax.fill_between(
-            steps_plot,
-            mean_vals - stderr_vals,
-            mean_vals + stderr_vals,
-            color=sty["color"],
-            alpha=0.12,
-        )
 
-    ax.set_xlabel("Training Steps", fontsize=12)
+        if dual_v_mode:
+            # Undiscounted V (solid) from 'exact_V_start_undiscounted'
+            undisc_matrix = np.full((len(seed_histories), len(steps)), np.nan)
+            for s_idx, h in enumerate(seed_histories):
+                h_steps = np.array([e['steps'] for e in h])
+                h_vals = np.array([
+                    e.get('exact_V_start_undiscounted', np.nan) for e in h
+                ])
+                if not np.all(np.isnan(h_vals)):
+                    undisc_matrix[s_idx, :] = np.interp(steps, h_steps, h_vals)
+
+            undisc_mean = np.nanmean(undisc_matrix, axis=0)
+            if smooth_window > 1 and len(undisc_mean) >= smooth_window:
+                kernel = np.ones(smooth_window) / smooth_window
+                undisc_mean = np.convolve(undisc_mean, kernel, mode='valid')
+
+            # Solid = undiscounted
+            ax.plot(
+                steps_plot, undisc_mean,
+                color=sty["color"], linestyle='solid',
+                marker=sty["marker"], markevery=marker_every,
+                markersize=6, linewidth=2, label=label,
+            )
+            # Dashed = discounted
+            ax.plot(
+                steps_plot, mean_vals,
+                color=sty["color"], linestyle='dashed',
+                linewidth=1.5, alpha=0.7,
+            )
+        else:
+            ax.plot(
+                steps_plot, mean_vals,
+                color=sty["color"],
+                linestyle=sty["linestyle"],
+                marker=sty["marker"],
+                markevery=marker_every,
+                markersize=6,
+                linewidth=2,
+                label=label,
+            )
+            ax.fill_between(
+                steps_plot,
+                mean_vals - stderr_vals,
+                mean_vals + stderr_vals,
+                color=sty["color"],
+                alpha=0.12,
+            )
+
+    ax.set_xlabel(x_label if x_label else "Training Steps", fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title(title, fontsize=14)
     ax.legend(fontsize=9, ncol=2, framealpha=0.9, loc="lower right")
