@@ -33,7 +33,7 @@ def run_experiment(
     horizon: int = 50,
     sample_budget: int = 10000,
     alpha: float = 0.5,
-    lr: float = 0.1,
+    lr: float = 0.5,
     trajectories_per_update: int = 10,
     seed: int = 0,
     eval_interval: int = 10,
@@ -194,7 +194,7 @@ def run_experiment_suite(
                         'horizon': 50,
                         'sample_budget': sample_budget,
                         'alpha': alpha,
-                        'lr': 0.1,
+                        'lr': 0.5,
                         'seed': seed
                     })
 
@@ -406,7 +406,7 @@ def run_2x2_exploration_experiment(
                     horizon=cond['horizon'],
                     sample_budget=cond['budget'],
                     alpha=alpha,
-                    lr=0.1,
+                    lr=0.5,
                     trajectories_per_update=10,
                     seed=seed
                 )
@@ -491,7 +491,7 @@ def run_learning_curve_experiment(
     horizon: int = 50,
     sample_budget: Optional[int] = None,
     alpha: float = 0.5,
-    lr: float = 0.1,
+    lr: float = 0.5,
     n_seeds: int = 30,
     trajectories_per_update: int = 10,
     eval_interval: int = 2,
@@ -708,7 +708,7 @@ def run_2x2_exploration_experiment_zeta(
                     horizon=cond['horizon'],
                     sample_budget=cond['budget'],
                     alpha=alpha,
-                    lr=0.1,
+                    lr=0.5,
                     trajectories_per_update=10,
                     seed=seed,
                 )
@@ -804,7 +804,7 @@ def run_learning_curve_experiment_zeta(
     horizon: int = 50,
     sample_budget: Optional[int] = None,
     alpha: float = 0.5,
-    lr: float = 0.1,
+    lr: float = 0.5,
     n_seeds: int = 30,
     trajectories_per_update: int = 10,
     eval_interval: int = 2,

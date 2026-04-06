@@ -217,7 +217,7 @@ def main():
                         help='Comma-separated teacher capacities (e.g. "-1,0,1,2,3")')
     parser.add_argument('--sample-budget', type=int, default=None,
                         help='Sample budget (default: budget_low from exploration thresholds)')
-    parser.add_argument('--lr', type=float, default=0.1,
+    parser.add_argument('--lr', type=float, default=0.5,
                         help='Learning rate')
     parser.add_argument('--seed', type=int, default=0,
                         help='Random seed for quick mode')

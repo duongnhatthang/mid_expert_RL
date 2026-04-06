@@ -77,7 +77,7 @@ def _run_single_experiment(args_tuple):
         horizon=horizon,
         sample_budget=budget,
         alpha=alpha,
-        lr=0.1,
+        lr=0.5,
         trajectories_per_update=10,
         seed=seed,
         eval_interval=5,
