@@ -26,21 +26,22 @@ from .environment import (
 )
 
 from .teacher import (
+    evaluate_policy_values,
+    build_optimal_policy,
+    build_uniform_policy,
+    build_mixture_policy,
     compute_teacher_values,
     compute_uniform_random_teacher_values,
-    sample_uniform_random_teacher_knowledge,
     compute_teacher_values_auto,
     compute_uniform_random_teacher_values_auto,
     compute_mixture_teacher_values,
     compute_mixture_teacher_values_auto,
     get_teacher_advantage,
-    get_teacher_policy,
 )
 
 from .student import (
     NPGPolicy,
     TabularSoftmaxPolicy,
-    TabularPolicy,
     Transition,
     collect_trajectory,
     collect_trajectories,
@@ -89,14 +90,15 @@ __all__ = [
     "generate_traps_random", "generate_traps", "GridEnv",
     "generate_equidistant_goals", "compute_exploration_thresholds",
     # teacher
+    "evaluate_policy_values", "build_optimal_policy",
+    "build_uniform_policy", "build_mixture_policy",
     "compute_teacher_values",
     "compute_uniform_random_teacher_values",
-    "sample_uniform_random_teacher_knowledge",
     "compute_teacher_values_auto", "compute_uniform_random_teacher_values_auto",
     "compute_mixture_teacher_values", "compute_mixture_teacher_values_auto",
-    "get_teacher_advantage", "get_teacher_policy",
+    "get_teacher_advantage",
     # student
-    "NPGPolicy", "TabularSoftmaxPolicy", "TabularPolicy",
+    "NPGPolicy", "TabularSoftmaxPolicy",
     "Transition", "collect_trajectory", "collect_trajectories",
     # training
     "estimate_returns", "compute_pav_rl_gradient", "update_policy", "evaluate_policy",

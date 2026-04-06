@@ -103,9 +103,6 @@ class TabularSoftmaxPolicy(NPGPolicy):
         return score.ravel()
 
 
-# Backward-compatible alias
-TabularPolicy = TabularSoftmaxPolicy
-
 
 @dataclass
 class Transition:

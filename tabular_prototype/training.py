@@ -7,10 +7,7 @@ from .environment import GridEnv
 from .student import TabularSoftmaxPolicy, Transition
 from .teacher import (
     get_teacher_advantage,
-    _build_transition_model,
-    _build_reward_matrix,
-    _build_absorbing_state_indices,
-    _solve_discounted_values,
+    evaluate_policy_values,
 )
 
 
@@ -45,18 +42,8 @@ def compute_student_qvalues(
         Q_pi: shape (n_states, n_actions)
         V_pi: shape (n_states,)
     """
-    T = _build_transition_model(env)
-    R = _build_reward_matrix(env, env.goals)
-    absorbing = _build_absorbing_state_indices(env, env.goals, env.traps)
-
-    def policy_aggregate(Q):
-        V = np.zeros(Q.shape[0])
-        for s in range(Q.shape[0]):
-            probs = policy.get_probs(s)
-            V[s] = probs @ Q[s]
-        return V
-
-    return _solve_discounted_values(T, R, absorbing, gamma, policy_aggregate, tol)
+    policy_probs = np.array([policy.get_probs(s) for s in range(env.n_states)])
+    return evaluate_policy_values(env, policy_probs, gamma, tol)
 
 
 # =========================================================================
