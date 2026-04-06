@@ -78,6 +78,7 @@ from .visualization import (
     visualize_advantage_grid,
     visualize_state_visitation,
     visualize_visitation_comparison_grid,
+    visualize_visitation_composite_grid,
     plot_2x2_results,
     plot_2x2_results_zeta,
     plot_learning_curves,
@@ -115,6 +116,7 @@ __all__ = [
     "visualize_policy", "visualize_teacher_policy", "visualize_student_policy",
     "compare_policies", "visualize_q_values_per_action", "visualize_advantage_grid",
     "visualize_state_visitation", "visualize_visitation_comparison_grid",
+    "visualize_visitation_composite_grid",
     "plot_2x2_results", "plot_2x2_results_zeta",
     "plot_learning_curves", "plot_learning_curves_improved",
 ]

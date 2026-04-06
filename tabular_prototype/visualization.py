@@ -569,6 +569,123 @@ def visualize_visitation_comparison_grid(
     return fig
 
 
+def visualize_visitation_composite_grid(
+    env: GridEnv,
+    all_visitation_data: dict,
+    outer_keys: list,
+    inner_row_keys: list,
+    inner_col_keys: list,
+    outer_label_fn,
+    inner_row_label_fn,
+    inner_col_label_fn,
+    goals: Optional[List[Tuple[int, int]]] = None,
+    suptitle: str = "Visitation Composite",
+    save_path: Optional[str] = None,
+) -> Any:
+    """
+    Landscape composite figure: outer grid of configs, inner grid of heatmaps.
+
+    Args:
+        all_visitation_data: Dict mapping (outer_key, inner_row_key, inner_col_key)
+                            -> np.ndarray (n_states, n_actions).
+        outer_keys: List of outer grid keys (e.g., (budget, horizon) tuples).
+        inner_row_keys: Row keys within each panel (e.g., teacher values).
+        inner_col_keys: Column keys within each panel (e.g., alpha values).
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+
+    n_outer = len(outer_keys)
+    n_inner_rows = len(inner_row_keys)
+    n_inner_cols = len(inner_col_keys)
+
+    # Landscape: arrange outer panels in a single row (or 2 rows if many)
+    if n_outer <= 4:
+        outer_rows, outer_cols = 1, n_outer
+    else:
+        outer_rows = 2
+        outer_cols = (n_outer + 1) // 2
+
+    cell = 1.8
+    fig_w = cell * n_inner_cols * outer_cols + 2.5
+    fig_h = cell * n_inner_rows * outer_rows + 2.0
+    fig = plt.figure(figsize=(fig_w, fig_h))
+
+    gs_outer = GridSpec(
+        outer_rows, outer_cols + 1,
+        width_ratios=[1] * outer_cols + [0.03],
+        wspace=0.3, hspace=0.4,
+    )
+
+    vmax = 0
+    for key, vis in all_visitation_data.items():
+        if vis is not None:
+            vmax = max(vmax, vis.sum(axis=1).max())
+    if vmax == 0:
+        vmax = 1
+
+    mappable = None
+    for oi, ok in enumerate(outer_keys):
+        o_row = oi // outer_cols
+        o_col = oi % outer_cols
+
+        gs_inner = GridSpecFromSubplotSpec(
+            n_inner_rows, n_inner_cols,
+            subplot_spec=gs_outer[o_row, o_col],
+            wspace=0.05, hspace=0.15,
+        )
+
+        for ri, rk in enumerate(inner_row_keys):
+            for ci, ck in enumerate(inner_col_keys):
+                ax = fig.add_subplot(gs_inner[ri, ci])
+                vis = all_visitation_data.get((ok, rk, ck))
+
+                if vis is None:
+                    ax.text(0.5, 0.5, 'N/A', ha='center', va='center',
+                            transform=ax.transAxes, fontsize=8, color='gray')
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                else:
+                    grid = vis.sum(axis=1).reshape(env.grid_size, env.grid_size)
+                    im = ax.imshow(grid, cmap='hot', origin='upper',
+                                   vmin=0, vmax=vmax)
+                    mappable = im
+
+                    start = env.start
+                    ax.add_patch(mpatches.Circle(
+                        (start[1], start[0]), 0.25,
+                        fill=True, color='cyan', alpha=0.8,
+                    ))
+                    if goals:
+                        for goal in goals:
+                            ax.add_patch(mpatches.Rectangle(
+                                (goal[1] - 0.35, goal[0] - 0.35), 0.7, 0.7,
+                                fill=False, edgecolor='lime', linewidth=1.2,
+                            ))
+
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+
+                if ci == 0:
+                    ax.set_ylabel(inner_row_label_fn(rk), fontsize=6)
+                if ri == 0:
+                    ax.set_title(inner_col_label_fn(ck), fontsize=6)
+
+    if mappable is not None:
+        cbar_ax = fig.add_subplot(gs_outer[:, -1])
+        fig.colorbar(mappable, cax=cbar_ax, label='Visit Count')
+
+    fig.suptitle(suptitle, fontsize=14, fontweight='bold', y=1.01)
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Composite visitation grid saved to {save_path}")
+
+    plt.close(fig)
+    return fig
+
+
 # =============================================================================
 # 2x2 Experiment Plot
 # =============================================================================
