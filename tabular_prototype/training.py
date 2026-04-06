@@ -153,7 +153,7 @@ def compute_pav_rl_gradient(
                 A_mu = get_teacher_advantage(
                     Q_mu, V_mu, trans.state_idx, trans.action
                 )
-                effective_reward = G_t + alpha * A_mu
+                effective_reward = (1.0 - alpha) * G_t + alpha * A_mu
             else:
                 effective_reward = G_t
 
