@@ -34,8 +34,8 @@ def run_lr_sweep(
     horizon = thresholds['horizon_large']
 
     print(f"LR Sweep: grid={grid_size}, distance={distance}, "
-          f"horizon={horizon}, budget={budget} update steps")
-    print(f"LR values: {LR_VALUES}")
+          f"horizon={horizon}, budget={budget} update steps", flush=True)
+    print(f"LR values: {LR_VALUES}", flush=True)
 
     histories = {}
     for lr in LR_VALUES:
@@ -71,8 +71,9 @@ def run_lr_sweep(
         metric="mean_reward",
         smooth_window=1,
         save_path=save_path,
+        label_fn=lambda lr: f"lr={lr}",
     )
-    print(f"\nFigure saved to {save_path}")
+    print(f"\nFigure saved to {save_path}", flush=True)
 
     # Print summary
     print("\n--- LR Sweep Summary ---")

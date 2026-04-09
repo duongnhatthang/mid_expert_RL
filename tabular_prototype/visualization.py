@@ -884,6 +884,7 @@ def plot_learning_curves(
     save_path: Optional[str] = None,
     dual_v_mode: bool = False,
     x_label: Optional[str] = None,
+    label_fn: Optional[Any] = None,
 ) -> Any:
     """
     Plot student learning curves for different teacher capacities on one figure.
@@ -979,7 +980,7 @@ def plot_learning_curves(
             steps_plot = steps
 
         sty = styles[cap]
-        label = _capacity_label(cap)
+        label = label_fn(cap) if label_fn else _capacity_label(cap)
         marker_every = max(1, len(steps_plot) // 8)
 
         if dual_v_mode:

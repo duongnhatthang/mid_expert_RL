@@ -76,7 +76,8 @@ def run_experiment(
             exact_npg_update(policy, Q_pi, Q_mu, V_mu, alpha, lr)
             update_count += 1
 
-            if update_count % eval_interval == 0:
+            is_last_step = (step == sample_budget - 1)
+            if update_count % eval_interval == 0 or is_last_step:
                 eval_results = evaluate_policy(
                     env, policy, n_episodes=eval_n_episodes, rng=rng
                 )
@@ -145,6 +146,13 @@ def run_experiment(
                     'unique_sa': vis_m['unique_sa'],
                     'state_entropy': vis_m['state_entropy'],
                 })
+
+    # In exact mode, collect visitation from the final policy via evaluation trajectories
+    if exact_gradient and cumulative_visitation.sum() == 0:
+        eval_trajs = collect_trajectories(env, policy, 100, rng)
+        cumulative_visitation = compute_state_action_visitation(
+            eval_trajs, env.n_states, env.n_actions
+        )
 
     final_eval = evaluate_policy(env, policy, n_episodes=100, rng=rng)
     final_vis = visitation_metrics(cumulative_visitation)
