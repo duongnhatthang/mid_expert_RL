@@ -199,8 +199,8 @@ def main():
                             '2x2_zeta', 'plot2x2_zeta', 'learning_curve_zeta',
                         ],
                         default='2x2', help='Experiment mode')
-    parser.add_argument('--grid-size', type=int, default=8,
-                        help='Grid size for 2x2 experiment')
+    parser.add_argument('--grid-size', type=int, default=9,
+                        help='Grid size (default 9x9)')
     parser.add_argument('--n-seeds', type=int, default=5,
                         help='Number of random seeds (exact V^π eval is variance-free)')
     parser.add_argument('--n-goals', type=int, default=None,
@@ -217,7 +217,7 @@ def main():
                         help='Comma-separated teacher capacities (e.g. "-1,0,1,2,3")')
     parser.add_argument('--sample-budget', type=int, default=None,
                         help='Sample budget (default: budget_low from exploration thresholds)')
-    parser.add_argument('--lr', type=float, default=0.1,
+    parser.add_argument('--lr', type=float, default=0.5,
                         help='Learning rate')
     parser.add_argument('--seed', type=int, default=0,
                         help='Random seed for quick mode')
@@ -372,13 +372,14 @@ def main():
         exact_path = args.learning_curve_output.replace('.png', '_exact_V.png')
         plot_learning_curves(
             histories,
-            title=f"Exact V^π(start) by Teacher Capacity\n"
-                  f"(alpha={args.alpha}, grid={args.grid_size}x{args.grid_size}, "
-                  f"budget={sample_budget})",
+            title=f"V^π(start): solid=undiscounted, dashed=discounted\n"
+                  f"(alpha={args.alpha}, grid={args.grid_size}x{args.grid_size})",
             ylabel="V^π(start)",
             metric="exact_V_start",
             smooth_window=1,
             save_path=exact_path,
+            dual_v_mode=True,
+            x_label="Update Steps",
         )
         print(f"Exact V learning curve figure saved to {exact_path}")
 
@@ -455,13 +456,14 @@ def main():
         exact_path = args.zeta_learning_curve_output.replace('.png', '_exact_V.png')
         plot_learning_curves(
             histories,
-            title=f"Exact V^π(start) by Teacher ζ\n"
-                  f"(alpha={args.alpha}, grid={args.grid_size}x{args.grid_size}, "
-                  f"budget={args.sample_budget})",
+            title=f"V^π(start): solid=undiscounted, dashed=discounted\n"
+                  f"(alpha={args.alpha}, grid={args.grid_size}x{args.grid_size})",
             ylabel="V^π(start)",
             metric="exact_V_start",
             smooth_window=1,
             save_path=exact_path,
+            dual_v_mode=True,
+            x_label="Update Steps",
         )
         print(f"Exact V learning curve figure saved to {exact_path}")
 

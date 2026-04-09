@@ -153,7 +153,7 @@ def compute_pav_rl_gradient(
                 A_mu = get_teacher_advantage(
                     Q_mu, V_mu, trans.state_idx, trans.action
                 )
-                effective_reward = G_t + alpha * A_mu
+                effective_reward = (1.0 - alpha) * G_t + alpha * A_mu
             else:
                 effective_reward = G_t
 
@@ -171,6 +171,31 @@ def compute_pav_rl_gradient(
 def update_policy(policy: TabularSoftmaxPolicy, grad: np.ndarray, lr: float):
     """Gradient ascent update."""
     policy.theta += lr * grad
+
+
+def exact_npg_update(
+    policy: TabularSoftmaxPolicy,
+    Q_pi: np.ndarray,
+    Q_mu: Optional[np.ndarray],
+    V_mu: Optional[np.ndarray],
+    alpha: float,
+    lr: float,
+):
+    """
+    Exact NPG update for tabular softmax (mirror descent).
+
+    θ[s,a] += lr · ((1-α)·Q^π(s,a) + α·A^μ(s,a))  for all (s,a)
+
+    Derived from Lemma F.2 (Agarwal et al. 2021, extended for PAV-RL).
+    The state-dependent offset ν cancels in the softmax normalization.
+
+    When Q_mu/V_mu are None (no teacher), reduces to θ += lr · Q^π.
+    """
+    if Q_mu is not None and V_mu is not None:
+        A_mu = Q_mu - V_mu[:, None]
+        policy.theta += lr * ((1.0 - alpha) * Q_pi + alpha * A_mu)
+    else:
+        policy.theta += lr * Q_pi
 
 
 def evaluate_policy(

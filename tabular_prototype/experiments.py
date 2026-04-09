@@ -16,12 +16,13 @@ from .student import TabularSoftmaxPolicy, collect_trajectories
 from .training import (
     compute_pav_rl_gradient,
     update_policy,
+    exact_npg_update,
     evaluate_policy,
     compute_student_qvalues,
     compute_state_action_visitation,
     visitation_metrics,
 )
-from .visualization import visualize_state_visitation
+from .visualization import visualize_state_visitation, visualize_visitation_comparison_grid
 
 
 def run_experiment(
@@ -32,17 +33,19 @@ def run_experiment(
     horizon: int = 50,
     sample_budget: int = 10000,
     alpha: float = 0.5,
-    lr: float = 0.1,
+    lr: float = 0.5,
     trajectories_per_update: int = 10,
     seed: int = 0,
     eval_interval: int = 10,
     eval_n_episodes: int = 20,
+    exact_gradient: bool = True,
 ) -> Dict:
     """Run a single experiment and return results dict.
 
-    If ``zeta`` is provided, the teacher is a mixture policy
-    mu(zeta) = zeta * pi* + (1-zeta) * pi_random (coin-flip at each step)
-    and ``teacher_capacity`` is ignored.
+    Args:
+        exact_gradient: If True (default), use exact NPG update where budget
+            = number of update steps. If False, use sample-based gradient
+            where budget = number of observations.
     """
     rng = np.random.default_rng(seed)
     env = GridEnv(grid_size=grid_size, goals=goals, horizon=horizon)
@@ -50,7 +53,6 @@ def run_experiment(
     if zeta is not None:
         Q_mu, V_mu, gamma = compute_mixture_teacher_values_auto(env, zeta)
     elif teacher_capacity == -1:
-        known_goals = []
         Q_mu, V_mu = None, None
         gamma = compute_gamma_from_horizon(horizon)
     elif teacher_capacity == 0:
@@ -65,38 +67,92 @@ def run_experiment(
     update_count = 0
     history = []
     cumulative_visitation = np.zeros((env.n_states, env.n_actions))
+    gamma_undiscounted = 1.0 - 1e-8
 
-    while total_steps < sample_budget:
-        trajectories = collect_trajectories(env, policy, trajectories_per_update, rng)
-        total_steps += sum(len(traj) for traj in trajectories)
+    if exact_gradient:
+        # Exact NPG mode: budget = number of update steps
+        for step in range(sample_budget):
+            Q_pi, V_pi = compute_student_qvalues(env, policy, gamma)
+            exact_npg_update(policy, Q_pi, Q_mu, V_mu, alpha, lr)
+            update_count += 1
 
-        # Track state-action visitation
-        step_vis = compute_state_action_visitation(
-            trajectories, env.n_states, env.n_actions
+            is_last_step = (step == sample_budget - 1)
+            if update_count % eval_interval == 0 or is_last_step:
+                eval_results = evaluate_policy(
+                    env, policy, n_episodes=eval_n_episodes, rng=rng
+                )
+                start_idx = env.state_to_idx(env.start)
+                _, V_pi_undiscounted = compute_student_qvalues(
+                    env, policy, gamma_undiscounted
+                )
+                history.append({
+                    'steps': update_count,
+                    'mean_reward': eval_results['mean_reward'],
+                    'goal_rate': eval_results['goal_rate'],
+                    'exact_V_start': float(V_pi[start_idx]),
+                    'exact_V_start_undiscounted': float(
+                        V_pi_undiscounted[start_idx]
+                    ),
+                    'unique_sa': 0,
+                    'state_entropy': 0.0,
+                })
+    else:
+        # Sample-based mode: budget = number of observations
+        while total_steps < sample_budget:
+            trajectories = collect_trajectories(
+                env, policy, trajectories_per_update, rng
+            )
+
+            # Truncate to respect budget
+            step_counts = [len(traj) for traj in trajectories]
+            remaining = sample_budget - total_steps
+            if sum(step_counts) > remaining:
+                cumsum = np.cumsum(step_counts)
+                keep = int(np.searchsorted(cumsum, remaining, side='right'))
+                trajectories = trajectories[:max(1, keep)]
+
+            total_steps += sum(len(traj) for traj in trajectories)
+
+            step_vis = compute_state_action_visitation(
+                trajectories, env.n_states, env.n_actions
+            )
+            cumulative_visitation += step_vis
+
+            Q_pi, V_pi = compute_student_qvalues(env, policy, gamma)
+
+            grad = compute_pav_rl_gradient(
+                policy, trajectories, Q_mu, V_mu, alpha, gamma, Q_pi=Q_pi
+            )
+            update_policy(policy, grad, lr)
+            update_count += 1
+
+            if update_count % eval_interval == 0:
+                eval_results = evaluate_policy(
+                    env, policy, n_episodes=eval_n_episodes, rng=rng
+                )
+                vis_m = visitation_metrics(cumulative_visitation)
+                start_idx = env.state_to_idx(env.start)
+                _, V_pi_undiscounted = compute_student_qvalues(
+                    env, policy, gamma_undiscounted
+                )
+                history.append({
+                    'steps': total_steps,
+                    'mean_reward': eval_results['mean_reward'],
+                    'goal_rate': eval_results['goal_rate'],
+                    'exact_V_start': float(V_pi[start_idx]),
+                    'exact_V_start_undiscounted': float(
+                        V_pi_undiscounted[start_idx]
+                    ),
+                    'unique_sa': vis_m['unique_sa'],
+                    'state_entropy': vis_m['state_entropy'],
+                })
+
+    # In exact mode, collect visitation from the final policy via evaluation trajectories
+    if exact_gradient and cumulative_visitation.sum() == 0:
+        eval_trajs = collect_trajectories(env, policy, 100, rng)
+        cumulative_visitation = compute_state_action_visitation(
+            eval_trajs, env.n_states, env.n_actions
         )
-        cumulative_visitation += step_vis
-
-        # Exact Q^π replaces Monte Carlo returns
-        Q_pi, V_pi = compute_student_qvalues(env, policy, gamma)
-
-        grad = compute_pav_rl_gradient(
-            policy, trajectories, Q_mu, V_mu, alpha, gamma, Q_pi=Q_pi
-        )
-        update_policy(policy, grad, lr)
-        update_count += 1
-
-        if update_count % eval_interval == 0:
-            eval_results = evaluate_policy(env, policy, n_episodes=eval_n_episodes, rng=rng)
-            vis_m = visitation_metrics(cumulative_visitation)
-            start_idx = env.state_to_idx(env.start)
-            history.append({
-                'steps': total_steps,
-                'mean_reward': eval_results['mean_reward'],
-                'goal_rate': eval_results['goal_rate'],
-                'exact_V_start': float(V_pi[start_idx]),
-                'unique_sa': vis_m['unique_sa'],
-                'state_entropy': vis_m['state_entropy'],
-            })
 
     final_eval = evaluate_policy(env, policy, n_episodes=100, rng=rng)
     final_vis = visitation_metrics(cumulative_visitation)
@@ -119,6 +175,8 @@ def run_experiment(
         'final_total_visits': final_vis['total_visits'],
         'visitation_counts': cumulative_visitation,
         'history': history,
+        'budget_mode': 'exact' if exact_gradient else 'sample',
+        'exact_gradient': exact_gradient,
     }
 
 
@@ -144,7 +202,7 @@ def run_experiment_suite(
                         'horizon': 50,
                         'sample_budget': sample_budget,
                         'alpha': alpha,
-                        'lr': 0.1,
+                        'lr': 0.5,
                         'seed': seed
                     })
 
@@ -241,6 +299,53 @@ def _save_visitation_heatmaps(
     print(f"Visitation heatmaps saved: {len(groups)} files in {vis_dir}/")
 
 
+def _save_visitation_comparison_grid(
+    all_results: List[Dict],
+    env: GridEnv,
+    goals: List[Tuple[int, int]],
+    figures_dir: str,
+    teacher_key: str = 'teacher_capacity',
+):
+    """
+    Save a single multi-panel figure comparing visitation across teacher
+    settings (rows) and budget×horizon conditions (columns).
+    """
+    from collections import defaultdict
+
+    # Group and average visitation across seeds
+    groups: Dict[tuple, List[np.ndarray]] = defaultdict(list)
+    for r in all_results:
+        key = (r[teacher_key], (r['budget_type'], r['horizon_type']))
+        if 'visitation_counts' in r:
+            groups[key].append(r['visitation_counts'])
+
+    visitation_data = {}
+    for (teacher_val, cond), vis_list in groups.items():
+        visitation_data[(teacher_val, cond)] = np.mean(vis_list, axis=0)
+
+    # Build ordered keys
+    row_keys = sorted(set(k[0] for k in visitation_data.keys()),
+                      key=lambda x: (isinstance(x, float), x))
+    col_keys = [('low', 'small'), ('low', 'large'), ('high', 'small'), ('high', 'large')]
+
+    if teacher_key == 'zeta':
+        row_label_fn = lambda k: f'ζ={k:.2f}'
+    else:
+        cap_labels = {-1: 'no teacher', 0: 'random'}
+        row_label_fn = lambda k: cap_labels.get(k, f'cap={k}')
+
+    col_label_fn = lambda k: f'{k[0]} budget\n{k[1]} horizon'
+
+    save_path = os.path.join(figures_dir, 'visitation_comparison_grid.png')
+    visualize_visitation_comparison_grid(
+        env, visitation_data, row_keys, col_keys,
+        row_label_fn, col_label_fn,
+        goals=goals,
+        suptitle=f'State Visitation: {teacher_key} × Condition',
+        save_path=save_path,
+    )
+
+
 def run_2x2_exploration_experiment(
     grid_size: int = 8,
     n_seeds: int = 10,
@@ -309,7 +414,7 @@ def run_2x2_exploration_experiment(
                     horizon=cond['horizon'],
                     sample_budget=cond['budget'],
                     alpha=alpha,
-                    lr=0.1,
+                    lr=0.5,
                     trajectories_per_update=10,
                     seed=seed
                 )
@@ -353,8 +458,38 @@ def run_2x2_exploration_experiment(
     _save_visitation_heatmaps(
         all_results, env, goals, figures_dir, teacher_key='teacher_capacity'
     )
+    _save_visitation_comparison_grid(
+        all_results, env, goals, figures_dir, teacher_key='teacher_capacity'
+    )
 
     return all_results
+
+
+def _detect_saturation(
+    history: List[Dict],
+    max_budget: int,
+    window: int = 10,
+    eps: float = 0.005,
+    checks_needed: int = 3,
+) -> int:
+    """Detect when learning curve plateaus. Returns step count at saturation."""
+    if len(history) < window:
+        return max_budget
+
+    rewards = [h['mean_reward'] for h in history]
+    consecutive = 0
+
+    for i in range(window, len(rewards)):
+        window_vals = rewards[i - window:i]
+        change = abs(max(window_vals) - min(window_vals))
+        if change < eps:
+            consecutive += 1
+            if consecutive >= checks_needed:
+                return history[i]['steps']
+        else:
+            consecutive = 0
+
+    return max_budget
 
 
 def run_learning_curve_experiment(
@@ -362,25 +497,48 @@ def run_learning_curve_experiment(
     goals: Optional[List[Tuple[int, int]]] = None,
     teacher_capacities: Optional[List[int]] = None,
     horizon: int = 50,
-    sample_budget: int = 10000,
+    sample_budget: Optional[int] = None,
     alpha: float = 0.5,
-    lr: float = 0.1,
+    lr: float = 0.5,
     n_seeds: int = 30,
     trajectories_per_update: int = 10,
     eval_interval: int = 2,
     eval_n_episodes: int = 50,
+    exact_gradient: bool = True,
+    max_budget: int = 10000,
+    saturation_window: int = 10,
+    saturation_eps: float = 0.005,
+    saturation_checks: int = 3,
 ) -> Dict[int, list]:
     """
-    Run experiments for each teacher capacity and collect per-seed learning histories.
+    Run learning curve experiments with optional saturation-based stopping.
 
-    Returns:
-        Dict mapping teacher_capacity -> list of per-seed histories.
-        Each history is a list of {'steps', 'mean_reward', 'goal_rate'} dicts.
+    If sample_budget is None, runs vanilla NPG (alpha=0) first to find
+    saturation point, then runs all baselines for that many steps.
+    If sample_budget is provided, uses that fixed budget (legacy behavior).
     """
     if goals is None:
         goals = [(9, 9), (0, 9), (9, 0)]
     if teacher_capacities is None:
         teacher_capacities = [-1] + list(range(len(goals) + 1))
+
+    if sample_budget is None:
+        # Run vanilla NPG to find saturation
+        print("  Finding saturation point for Vanilla NPG (α=0)...", flush=True)
+        sat_result = run_experiment(
+            grid_size=grid_size, goals=goals, teacher_capacity=0,
+            horizon=horizon, sample_budget=max_budget, alpha=0.0, lr=lr,
+            trajectories_per_update=trajectories_per_update, seed=0,
+            eval_interval=eval_interval, eval_n_episodes=eval_n_episodes,
+            exact_gradient=exact_gradient,
+        )
+        effective_budget = _detect_saturation(
+            sat_result['history'], max_budget,
+            saturation_window, saturation_eps, saturation_checks,
+        )
+        print(f"  Saturation at step {effective_budget} (max was {max_budget})")
+    else:
+        effective_budget = sample_budget
 
     histories: Dict[int, list] = {}
 
@@ -389,17 +547,13 @@ def run_learning_curve_experiment(
         print(f"  Teacher capacity {cap}...", end=" ", flush=True)
         for seed in range(n_seeds):
             result = run_experiment(
-                grid_size=grid_size,
-                goals=goals,
-                teacher_capacity=cap,
-                horizon=horizon,
-                sample_budget=sample_budget,
-                alpha=alpha,
-                lr=lr,
+                grid_size=grid_size, goals=goals, teacher_capacity=cap,
+                horizon=horizon, sample_budget=effective_budget,
+                alpha=alpha, lr=lr,
                 trajectories_per_update=trajectories_per_update,
-                seed=seed,
-                eval_interval=eval_interval,
+                seed=seed, eval_interval=eval_interval,
                 eval_n_episodes=eval_n_episodes,
+                exact_gradient=exact_gradient,
             )
             histories[cap].append(result['history'])
         rewards = [h[-1]['mean_reward'] for h in histories[cap] if h]
@@ -562,7 +716,7 @@ def run_2x2_exploration_experiment_zeta(
                     horizon=cond['horizon'],
                     sample_budget=cond['budget'],
                     alpha=alpha,
-                    lr=0.1,
+                    lr=0.5,
                     trajectories_per_update=10,
                     seed=seed,
                 )
@@ -604,6 +758,9 @@ def run_2x2_exploration_experiment_zeta(
     env = GridEnv(grid_size=grid_size, goals=goals,
                   horizon=thresholds['horizon_large'])
     _save_visitation_heatmaps(
+        all_results, env, goals, figures_dir, teacher_key='zeta'
+    )
+    _save_visitation_comparison_grid(
         all_results, env, goals, figures_dir, teacher_key='zeta'
     )
 
@@ -653,16 +810,25 @@ def run_learning_curve_experiment_zeta(
     goals: Optional[List[Tuple[int, int]]] = None,
     zeta_values: Optional[List[float]] = None,
     horizon: int = 50,
-    sample_budget: int = 10000,
+    sample_budget: Optional[int] = None,
     alpha: float = 0.5,
-    lr: float = 0.1,
+    lr: float = 0.5,
     n_seeds: int = 30,
     trajectories_per_update: int = 10,
     eval_interval: int = 2,
     eval_n_episodes: int = 50,
+    exact_gradient: bool = True,
+    max_budget: int = 10000,
+    saturation_window: int = 10,
+    saturation_eps: float = 0.005,
+    saturation_checks: int = 3,
 ) -> Dict[float, list]:
     """
     Learning curve experiment using the continuous zeta parameterisation.
+
+    If sample_budget is None, runs vanilla NPG (zeta=0, alpha=0) first to find
+    saturation point, then runs all baselines for that many steps.
+    If sample_budget is provided, uses that fixed budget (legacy behavior).
 
     Returns:
         Dict mapping zeta -> list of per-seed histories.
@@ -671,6 +837,24 @@ def run_learning_curve_experiment_zeta(
         goals = generate_equidistant_goals(grid_size, 3)
     if zeta_values is None:
         zeta_values = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+    if sample_budget is None:
+        # Run vanilla NPG to find saturation
+        print("  Finding saturation point for Vanilla NPG (zeta=0, α=0)...", flush=True)
+        sat_result = run_experiment(
+            grid_size=grid_size, goals=goals, zeta=0.0,
+            horizon=horizon, sample_budget=max_budget, alpha=0.0, lr=lr,
+            trajectories_per_update=trajectories_per_update, seed=0,
+            eval_interval=eval_interval, eval_n_episodes=eval_n_episodes,
+            exact_gradient=exact_gradient,
+        )
+        effective_budget = _detect_saturation(
+            sat_result['history'], max_budget,
+            saturation_window, saturation_eps, saturation_checks,
+        )
+        print(f"  Saturation at step {effective_budget} (max was {max_budget})")
+    else:
+        effective_budget = sample_budget
 
     histories: Dict[float, list] = {}
 
@@ -683,13 +867,14 @@ def run_learning_curve_experiment_zeta(
                 goals=goals,
                 zeta=zeta,
                 horizon=horizon,
-                sample_budget=sample_budget,
+                sample_budget=effective_budget,
                 alpha=alpha,
                 lr=lr,
                 trajectories_per_update=trajectories_per_update,
                 seed=seed,
                 eval_interval=eval_interval,
                 eval_n_episodes=eval_n_episodes,
+                exact_gradient=exact_gradient,
             )
             histories[zeta].append(result['history'])
         rewards = [h[-1]['mean_reward'] for h in histories[zeta] if h]

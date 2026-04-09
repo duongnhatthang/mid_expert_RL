@@ -450,6 +450,242 @@ def visualize_state_visitation(
     return fig
 
 
+def visualize_visitation_comparison_grid(
+    env: GridEnv,
+    visitation_data: dict,
+    row_keys: list,
+    col_keys: list,
+    row_label_fn,
+    col_label_fn,
+    goals: Optional[List[Tuple[int, int]]] = None,
+    suptitle: str = "State Visitation Comparison",
+    save_path: Optional[str] = None,
+) -> Any:
+    """
+    Multi-panel heatmap comparing state visitation across teacher settings and conditions.
+
+    Args:
+        env:              GridEnv instance (for grid_size, start position).
+        visitation_data:  Dict mapping (row_key, col_key) -> np.ndarray (n_states, n_actions).
+        row_keys:         Ordered list of row keys (e.g. zeta values or teacher capacities).
+        col_keys:         Ordered list of column keys (e.g. (budget_type, horizon_type) tuples).
+        row_label_fn:     Callable: row_key -> display string for row labels.
+        col_label_fn:     Callable: col_key -> display string for column headers.
+        goals:            Goal positions for annotation.
+        suptitle:         Figure title.
+        save_path:        If provided, save figure to this path.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    from matplotlib.gridspec import GridSpec
+
+    n_rows = len(row_keys)
+    n_cols = len(col_keys)
+    cell_size = 2.5
+    fig = plt.figure(
+        figsize=(cell_size * n_cols + 2.0, cell_size * n_rows + 1.5)
+    )
+    gs = GridSpec(
+        n_rows, n_cols + 1,
+        width_ratios=[1] * n_cols + [0.05],
+        wspace=0.15, hspace=0.25,
+    )
+    axes = np.empty((n_rows, n_cols), dtype=object)
+    for i in range(n_rows):
+        for j in range(n_cols):
+            axes[i, j] = fig.add_subplot(gs[i, j])
+
+    # Compute shared color scale
+    vmax = 0
+    grids = {}
+    for rk in row_keys:
+        for ck in col_keys:
+            vis = visitation_data.get((rk, ck))
+            if vis is not None:
+                state_visits = vis.sum(axis=1)
+                grid = state_visits.reshape(env.grid_size, env.grid_size)
+                grids[(rk, ck)] = grid
+                vmax = max(vmax, grid.max())
+    if vmax == 0:
+        vmax = 1
+
+    mappable = None
+    for i, rk in enumerate(row_keys):
+        for j, ck in enumerate(col_keys):
+            ax = axes[i, j]
+            grid = grids.get((rk, ck))
+
+            if grid is None:
+                ax.text(0.5, 0.5, 'N/A', ha='center', va='center',
+                        transform=ax.transAxes, fontsize=11, color='gray')
+                ax.set_xticks([])
+                ax.set_yticks([])
+            else:
+                im = ax.imshow(grid, cmap='hot', origin='upper', vmin=0, vmax=vmax)
+                mappable = im
+
+                # Mark start
+                start = env.start
+                ax.add_patch(patches.Circle(
+                    (start[1], start[0]), 0.25,
+                    fill=True, color='cyan', alpha=0.8, linewidth=0,
+                ))
+                ax.text(start[1], start[0], 'S', ha='center', va='center',
+                        color='black', fontweight='bold', fontsize=7)
+
+                # Mark goals
+                if goals:
+                    for goal in goals:
+                        ax.add_patch(patches.Rectangle(
+                            (goal[1] - 0.35, goal[0] - 0.35), 0.7, 0.7,
+                            fill=False, edgecolor='lime', linewidth=1.5,
+                        ))
+                        ax.text(goal[1], goal[0], 'G', ha='center', va='center',
+                                color='lime', fontweight='bold', fontsize=7)
+
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+            # Row label on leftmost column
+            if j == 0:
+                ax.set_ylabel(row_label_fn(rk), fontsize=9)
+
+            # Column header on top row
+            if i == 0:
+                ax.set_title(col_label_fn(ck), fontsize=9)
+
+    # Shared colorbar
+    if mappable is not None:
+        cbar_ax = fig.add_subplot(gs[:, -1])
+        fig.colorbar(mappable, cax=cbar_ax, label='Visit Count')
+
+    fig.suptitle(suptitle, fontsize=13, fontweight='bold', y=1.02)
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Visitation comparison grid saved to {save_path}")
+
+    plt.close(fig)
+    return fig
+
+
+def visualize_visitation_composite_grid(
+    env: GridEnv,
+    all_visitation_data: dict,
+    outer_keys: list,
+    inner_row_keys: list,
+    inner_col_keys: list,
+    outer_label_fn,
+    inner_row_label_fn,
+    inner_col_label_fn,
+    goals: Optional[List[Tuple[int, int]]] = None,
+    suptitle: str = "Visitation Composite",
+    save_path: Optional[str] = None,
+) -> Any:
+    """
+    Landscape composite figure: outer grid of configs, inner grid of heatmaps.
+
+    Args:
+        all_visitation_data: Dict mapping (outer_key, inner_row_key, inner_col_key)
+                            -> np.ndarray (n_states, n_actions).
+        outer_keys: List of outer grid keys (e.g., (budget, horizon) tuples).
+        inner_row_keys: Row keys within each panel (e.g., teacher values).
+        inner_col_keys: Column keys within each panel (e.g., alpha values).
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+
+    n_outer = len(outer_keys)
+    n_inner_rows = len(inner_row_keys)
+    n_inner_cols = len(inner_col_keys)
+
+    # Landscape: arrange outer panels in a single row (or 2 rows if many)
+    if n_outer <= 4:
+        outer_rows, outer_cols = 1, n_outer
+    else:
+        outer_rows = 2
+        outer_cols = (n_outer + 1) // 2
+
+    cell = 1.8
+    fig_w = cell * n_inner_cols * outer_cols + 2.5
+    fig_h = cell * n_inner_rows * outer_rows + 2.0
+    fig = plt.figure(figsize=(fig_w, fig_h))
+
+    gs_outer = GridSpec(
+        outer_rows, outer_cols + 1,
+        width_ratios=[1] * outer_cols + [0.03],
+        wspace=0.3, hspace=0.4,
+    )
+
+    vmax = 0
+    for key, vis in all_visitation_data.items():
+        if vis is not None:
+            vmax = max(vmax, vis.sum(axis=1).max())
+    if vmax == 0:
+        vmax = 1
+
+    mappable = None
+    for oi, ok in enumerate(outer_keys):
+        o_row = oi // outer_cols
+        o_col = oi % outer_cols
+
+        gs_inner = GridSpecFromSubplotSpec(
+            n_inner_rows, n_inner_cols,
+            subplot_spec=gs_outer[o_row, o_col],
+            wspace=0.05, hspace=0.15,
+        )
+
+        for ri, rk in enumerate(inner_row_keys):
+            for ci, ck in enumerate(inner_col_keys):
+                ax = fig.add_subplot(gs_inner[ri, ci])
+                vis = all_visitation_data.get((ok, rk, ck))
+
+                if vis is None:
+                    ax.text(0.5, 0.5, 'N/A', ha='center', va='center',
+                            transform=ax.transAxes, fontsize=8, color='gray')
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                else:
+                    grid = vis.sum(axis=1).reshape(env.grid_size, env.grid_size)
+                    im = ax.imshow(grid, cmap='hot', origin='upper',
+                                   vmin=0, vmax=vmax)
+                    mappable = im
+
+                    start = env.start
+                    ax.add_patch(mpatches.Circle(
+                        (start[1], start[0]), 0.25,
+                        fill=True, color='cyan', alpha=0.8,
+                    ))
+                    if goals:
+                        for goal in goals:
+                            ax.add_patch(mpatches.Rectangle(
+                                (goal[1] - 0.35, goal[0] - 0.35), 0.7, 0.7,
+                                fill=False, edgecolor='lime', linewidth=1.2,
+                            ))
+
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+
+                if ci == 0:
+                    ax.set_ylabel(inner_row_label_fn(rk), fontsize=6)
+                if ri == 0:
+                    ax.set_title(inner_col_label_fn(ck), fontsize=6)
+
+    if mappable is not None:
+        cbar_ax = fig.add_subplot(gs_outer[:, -1])
+        fig.colorbar(mappable, cax=cbar_ax, label='Visit Count')
+
+    fig.suptitle(suptitle, fontsize=14, fontweight='bold', y=1.01)
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Composite visitation grid saved to {save_path}")
+
+    plt.close(fig)
+    return fig
+
+
 # =============================================================================
 # 2x2 Experiment Plot
 # =============================================================================
@@ -646,6 +882,9 @@ def plot_learning_curves(
     metric: str = "mean_reward",
     smooth_window: int = 3,
     save_path: Optional[str] = None,
+    dual_v_mode: bool = False,
+    x_label: Optional[str] = None,
+    label_fn: Optional[Any] = None,
 ) -> Any:
     """
     Plot student learning curves for different teacher capacities on one figure.
@@ -741,27 +980,58 @@ def plot_learning_curves(
             steps_plot = steps
 
         sty = styles[cap]
-        label = _capacity_label(cap)
+        label = label_fn(cap) if label_fn else _capacity_label(cap)
         marker_every = max(1, len(steps_plot) // 8)
-        ax.plot(
-            steps_plot, mean_vals,
-            color=sty["color"],
-            linestyle=sty["linestyle"],
-            marker=sty["marker"],
-            markevery=marker_every,
-            markersize=6,
-            linewidth=2,
-            label=label,
-        )
-        ax.fill_between(
-            steps_plot,
-            mean_vals - stderr_vals,
-            mean_vals + stderr_vals,
-            color=sty["color"],
-            alpha=0.12,
-        )
 
-    ax.set_xlabel("Training Steps", fontsize=12)
+        if dual_v_mode:
+            # Undiscounted V (solid) from 'exact_V_start_undiscounted'
+            undisc_matrix = np.full((len(seed_histories), len(steps)), np.nan)
+            for s_idx, h in enumerate(seed_histories):
+                h_steps = np.array([e['steps'] for e in h])
+                h_vals = np.array([
+                    e.get('exact_V_start_undiscounted', np.nan) for e in h
+                ])
+                if not np.all(np.isnan(h_vals)):
+                    undisc_matrix[s_idx, :] = np.interp(steps, h_steps, h_vals)
+
+            undisc_mean = np.nanmean(undisc_matrix, axis=0)
+            if smooth_window > 1 and len(undisc_mean) >= smooth_window:
+                kernel = np.ones(smooth_window) / smooth_window
+                undisc_mean = np.convolve(undisc_mean, kernel, mode='valid')
+
+            # Solid = undiscounted
+            ax.plot(
+                steps_plot, undisc_mean,
+                color=sty["color"], linestyle='solid',
+                marker=sty["marker"], markevery=marker_every,
+                markersize=6, linewidth=2, label=label,
+            )
+            # Dashed = discounted
+            ax.plot(
+                steps_plot, mean_vals,
+                color=sty["color"], linestyle='dashed',
+                linewidth=1.5, alpha=0.7,
+            )
+        else:
+            ax.plot(
+                steps_plot, mean_vals,
+                color=sty["color"],
+                linestyle=sty["linestyle"],
+                marker=sty["marker"],
+                markevery=marker_every,
+                markersize=6,
+                linewidth=2,
+                label=label,
+            )
+            ax.fill_between(
+                steps_plot,
+                mean_vals - stderr_vals,
+                mean_vals + stderr_vals,
+                color=sty["color"],
+                alpha=0.12,
+            )
+
+    ax.set_xlabel(x_label if x_label else "Training Steps", fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title(title, fontsize=14)
     ax.legend(fontsize=9, ncol=2, framealpha=0.9, loc="lower right")
