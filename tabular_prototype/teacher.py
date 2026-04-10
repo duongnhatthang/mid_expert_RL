@@ -151,36 +151,33 @@ def build_mixture_policy(
     zeta: float,
     gamma: float,
     tol: float = 1e-6,
+    known_goals: Optional[List[Tuple[int, int]]] = None,
 ) -> np.ndarray:
     """
-    Build mixture policy: pi(a|s) = zeta * I[a = a*(s)] + (1 - zeta) / |A|.
+    Build mixture policy: pi(a|s) = zeta * optimal(a|s) + (1 - zeta) * uniform(a|s).
 
-    a*(s) = argmax_a Q*(s,a) w.r.t. all TRUE goals (env.goals).
+    The optimal component is computed w.r.t. known_goals (defaults to env.goals).
 
     Args:
-        env:   GridEnv instance.
-        zeta:  mixture weight in [0, 1]  (0 = pure random, 1 = pure optimal).
-        gamma: discount factor.
-        tol:   convergence tolerance.
+        env:         GridEnv instance.
+        zeta:        mixture weight in [0, 1]  (0 = pure random, 1 = pure optimal).
+        gamma:       discount factor.
+        tol:         convergence tolerance.
+        known_goals: Goals used for optimal policy (defaults to env.goals).
 
     Returns:
         policy_probs: shape (n_states, n_actions).
     """
+    if known_goals is None:
+        known_goals = env.goals
     n_actions = env.n_actions
-    T = _build_transition_model(env)
-    R_true = _build_reward_matrix(env, env.goals)
-    absorbing_true = _build_absorbing_state_indices(env, env.goals, env.traps)
-    Q_star, _ = _solve_discounted_values(
-        T, R_true, absorbing_true, gamma,
-        aggregate_fn=lambda q: q.max(axis=1),
-        tol=tol,
-    )
-    optimal_actions = Q_star.argmax(axis=1)
-
-    n_states = env.n_states
-    policy_probs = np.full((n_states, n_actions), (1.0 - zeta) / n_actions)
-    policy_probs[np.arange(n_states), optimal_actions] += zeta
-    return policy_probs
+    if zeta == 0.0:
+        return build_uniform_policy(env.n_states, n_actions)
+    optimal_policy = build_optimal_policy(env, known_goals, gamma, tol)
+    if zeta == 1.0:
+        return optimal_policy
+    uniform = build_uniform_policy(env.n_states, n_actions)
+    return zeta * optimal_policy + (1.0 - zeta) * uniform
 
 
 
@@ -231,18 +228,32 @@ def compute_uniform_random_teacher_values(
 def compute_teacher_values_auto(
     env: GridEnv,
     known_goals: List[Tuple[int, int]],
+    zeta: float = 1.0,
+    gamma: Optional[float] = None,
     known_traps: Optional[List[Tuple[int, int]]] = None,
-    gamma: Optional[float] = None
+    tol: float = 1e-6,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """
-    Compute teacher values with automatic gamma from horizon.
+    Unified teacher value computation with automatic gamma from horizon.
+
+    Builds a mixture policy: zeta * optimal(known_goals) + (1-zeta) * uniform,
+    then evaluates Q^mu and V^mu in the true MDP.
+
+    Args:
+        env:         GridEnv instance.
+        known_goals: Goals the teacher knows about.
+        zeta:        Mixture weight in [0, 1] (0=uniform, 1=optimal). Default 1.0.
+        gamma:       Discount factor (auto-computed from horizon if None).
+        known_traps: Traps the teacher knows about (unused for now, reserved).
+        tol:         Convergence tolerance.
 
     Returns:
         Q, V, effective_gamma
     """
     if gamma is None:
         gamma = compute_gamma_from_horizon(env.horizon)
-    Q, V = compute_teacher_values(env, known_goals, gamma, known_traps=known_traps)
+    policy_probs = build_mixture_policy(env, zeta, gamma, tol, known_goals)
+    Q, V = evaluate_policy_values(env, policy_probs, gamma, tol)
     return Q, V, gamma
 
 
@@ -252,11 +263,9 @@ def compute_uniform_random_teacher_values_auto(
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Compute uniform-random teacher values with automatic gamma from horizon.
+    Thin wrapper around compute_teacher_values_auto for backward compatibility.
     """
-    if gamma is None:
-        gamma = compute_gamma_from_horizon(env.horizon)
-    Q, V = compute_uniform_random_teacher_values(env, gamma)
-    return Q, V, gamma
+    return compute_teacher_values_auto(env, env.goals, zeta=0.0, gamma=gamma)
 
 
 def get_teacher_advantage(
@@ -311,11 +320,9 @@ def compute_mixture_teacher_values_auto(
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Compute mixture teacher values with automatic gamma from horizon.
+    Thin wrapper around compute_teacher_values_auto for backward compatibility.
 
     Returns:
         Q, V, effective_gamma
     """
-    if gamma is None:
-        gamma = compute_gamma_from_horizon(env.horizon)
-    Q, V = compute_mixture_teacher_values(env, zeta, gamma, tol)
-    return Q, V, gamma
+    return compute_teacher_values_auto(env, env.goals, zeta=zeta, gamma=gamma, tol=tol)

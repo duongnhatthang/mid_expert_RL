@@ -7,11 +7,7 @@ from typing import List, Dict, Tuple, Optional
 
 from .config import compute_gamma_from_horizon
 from .environment import GridEnv, generate_equidistant_goals, compute_exploration_thresholds
-from .teacher import (
-    compute_teacher_values_auto,
-    compute_uniform_random_teacher_values_auto,
-    compute_mixture_teacher_values_auto,
-)
+from .teacher import compute_teacher_values_auto
 from .student import TabularSoftmaxPolicy, collect_trajectories
 from .training import (
     compute_pav_rl_gradient,
@@ -50,16 +46,17 @@ def run_experiment(
     rng = np.random.default_rng(seed)
     env = GridEnv(grid_size=grid_size, goals=goals, horizon=horizon)
 
-    if zeta is not None:
-        Q_mu, V_mu, gamma = compute_mixture_teacher_values_auto(env, zeta)
-    elif teacher_capacity == -1:
+    gamma = compute_gamma_from_horizon(horizon)
+    if teacher_capacity == -1 and zeta is None:
         Q_mu, V_mu = None, None
-        gamma = compute_gamma_from_horizon(horizon)
-    elif teacher_capacity == 0:
-        Q_mu, V_mu, gamma = compute_uniform_random_teacher_values_auto(env)
+    elif zeta is not None:
+        Q_mu, V_mu, gamma = compute_teacher_values_auto(
+            env, env.goals, zeta=zeta, gamma=gamma)
     else:
-        known_goals = goals[:teacher_capacity]
-        Q_mu, V_mu, gamma = compute_teacher_values_auto(env, known_goals)
+        known_goals = goals[:teacher_capacity] if teacher_capacity > 0 else goals
+        effective_zeta = 0.0 if teacher_capacity == 0 else 1.0
+        Q_mu, V_mu, gamma = compute_teacher_values_auto(
+            env, known_goals, zeta=effective_zeta, gamma=gamma)
 
     policy = TabularSoftmaxPolicy(env.n_states, env.n_actions)
 
