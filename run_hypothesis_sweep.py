@@ -1022,10 +1022,11 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                 n_cap = len(caps)
                 n_zeta = len(zetas)
                 n_budget = len(budget_vals)
-                n_cols = n_zeta + 1  # +1 advantage
+                # Two side-by-side heatmaps per (cap, ζ) cell: visitation | advantage
+                n_cols = 2 * n_zeta
                 n_rows = n_budget * n_cap
 
-                cell_size = 1.4
+                cell_size = 1.0
                 fig_w = cell_size * n_cols + 4.0
                 fig_h = cell_size * n_rows + 1.6
                 fig, axes = plt.subplots(n_rows, n_cols,
@@ -1040,44 +1041,62 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                     for ci, c in enumerate(caps):
                         global_row = bi * n_cap + ci
                         for zi, z in enumerate(zetas):
-                            ax = axes[global_row, zi]
+                            vis_col = 2 * zi
+                            adv_col = 2 * zi + 1
+
+                            # Left: visitation heatmap
+                            ax_v = axes[global_row, vis_col]
                             grid = vis_grids.get((budget, c, z))
                             if grid is not None:
-                                im = ax.imshow(grid, cmap='hot', origin='upper',
-                                               vmin=0, vmax=vmax_vis)
+                                im = ax_v.imshow(grid, cmap='hot', origin='upper',
+                                                 vmin=0, vmax=vmax_vis)
                                 vis_mappables[budget] = im
-                                _annotate_grid(ax, env, goals, compact=True)
+                                _annotate_grid(ax_v, env, goals, compact=True)
                             else:
-                                ax.axis('off')
-                            ax.set_xticks([])
-                            ax.set_yticks([])
-                            if global_row == 0:
-                                ax.set_title(rf'$\zeta={z}$', fontsize=10)
+                                ax_v.axis('off')
+                            ax_v.set_xticks([])
+                            ax_v.set_yticks([])
 
-                        # Advantage column (use ζ=1.0 to show the sharp signal)
-                        ax_adv = axes[global_row, n_zeta]
-                        adv_grid = adv_grids_full.get((c, 1.0))
-                        if adv_grid is not None:
-                            im_adv = ax_adv.imshow(adv_grid, cmap='hot', origin='upper',
+                            # Right: advantage heatmap for THIS (cap, ζ) pair
+                            ax_a = axes[global_row, adv_col]
+                            adv_grid = adv_grids_full.get((c, z))
+                            if adv_grid is not None:
+                                im_a = ax_a.imshow(adv_grid, cmap='hot', origin='upper',
                                                    vmin=0, vmax=vmax_adv)
-                            adv_mappable = im_adv
-                            _annotate_grid(ax_adv, env, goals, compact=True)
-                        else:
-                            ax_adv.text(0.5, 0.5, 'N/A', ha='center', va='center',
-                                        transform=ax_adv.transAxes, fontsize=9, color='gray')
-                            ax_adv.set_xlim(0, 1)
-                            ax_adv.set_ylim(0, 1)
-                        ax_adv.set_xticks([])
-                        ax_adv.set_yticks([])
-                        if global_row == 0:
-                            ax_adv.set_title(r'$\max_a A^{\mu}|_{\zeta=1}$',
-                                             fontsize=9)
+                                adv_mappable = im_a
+                                _annotate_grid(ax_a, env, goals, compact=True)
+                            else:
+                                ax_a.text(0.5, 0.5, 'N/A', ha='center', va='center',
+                                          transform=ax_a.transAxes, fontsize=8, color='gray')
+                                ax_a.set_xlim(0, 1)
+                                ax_a.set_ylim(0, 1)
+                            ax_a.set_xticks([])
+                            ax_a.set_yticks([])
+
+                            if global_row == 0:
+                                # Column titles: a single ζ label spans the vis|adv pair,
+                                # and each sub-column is annotated "vis" / "adv".
+                                ax_v.set_title('visit', fontsize=7)
+                                ax_a.set_title('adv', fontsize=7)
 
                 fig.subplots_adjust(
-                    left=0.14, right=0.86, bottom=0.04, top=0.93,
-                    wspace=0.10, hspace=0.25)
+                    left=0.13, right=0.86, bottom=0.04, top=0.92,
+                    wspace=0.06, hspace=0.30)
 
-                # Row labels via fig.text (ylabel is unreliable at small cell sizes)
+                # Single ζ header centered over each (vis, adv) pair in the top row
+                for zi, z in enumerate(zetas):
+                    vis_col = 2 * zi
+                    adv_col = 2 * zi + 1
+                    ax_v = axes[0, vis_col]
+                    ax_a = axes[0, adv_col]
+                    bbox_v = ax_v.get_position()
+                    bbox_a = ax_a.get_position()
+                    x_center = (bbox_v.x0 + bbox_a.x1) / 2.0
+                    y_top = bbox_v.y1 + 0.025
+                    fig.text(x_center, y_top, rf'$\zeta={z}$',
+                             ha='center', va='bottom', fontsize=11, fontweight='bold')
+
+                # Row labels (c=0, c=1, ...) via fig.text just left of the first column
                 for bi, budget in enumerate(budget_vals):
                     for ci, c in enumerate(caps):
                         global_row = bi * n_cap + ci
@@ -1121,16 +1140,17 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                     height = top_bbox.y1 - bot_bbox.y0
                     cax_adv = fig.add_axes([0.94, y0, 0.012, height])
                     cb_adv = fig.colorbar(adv_mappable, cax=cax_adv)
-                    cb_adv.set_label('Advantage', fontsize=9)
+                    cb_adv.set_label(r'$\max_a A^{\mu}(s,a)$', fontsize=9)
                     cb_adv.ax.tick_params(labelsize=7)
 
                 alpha_label = 'Vanilla NPG' if alpha == 0.0 else rf'$\alpha={alpha}$'
                 fig.suptitle(
-                    rf'Cap$\times\zeta$ visitation — distance={dist}, '
-                    rf'horizon={horizon_val} ({h_type}), {alpha_label}'
+                    rf'Cap$\times\zeta$ visitation + teacher advantage — '
+                    rf'distance={dist}, horizon={horizon_val} ({h_type}), {alpha_label}'
                     '\n'
-                    r'Rows grouped by budget $T$. '
-                    r'Each budget band has its own visit colour scale.',
+                    r'Each $(c,\;\zeta)$ cell shows visitation (left) and '
+                    r'$\max_a A^{\mu}(s,a)$ (right). '
+                    r'Rows grouped by budget $T$ (per-budget visit colour scale).',
                     fontsize=11, fontweight='bold')
 
                 save_path = os.path.join(
@@ -1384,10 +1404,15 @@ DELTA_V_SUBTITLE = (
     r'$\Delta V^{\pi}(s_0)\;=\;V^{\pi_{\mathrm{new}}}(s_0)\;-\;V^{\pi_{\mathrm{old}}}(s_0)$'
     r' (one curve per teacher value).'
     '\n'
-    r'The full update uses the convex combination '
-    r'$(1-\alpha)\,Q^{\pi}\;+\;\alpha\,A^{\mu}$, so '
-    r'$\Delta V^{\pi}(s_0) = \Delta_{Q^{\pi}} + \Delta_{A^{\mu}}$ (approximately, '
-    r'since softmax couples the two components).'
+    r'Full NPG update: '
+    r'$\theta\leftarrow\theta+\eta\,[(1-\alpha)\,Q^{\pi}+\alpha\,A^{\mu}]$, '
+    r'so $\Delta V^{\pi}(s_0)\approx\Delta_{Q^{\pi}}+\Delta_{A^{\mu}}$.'
+    '\n'
+    r'Decomposition: $\Delta_{Q^{\pi}}$ is the hypothetical value change from a '
+    r'Qπ-only update $\theta\leftarrow\theta+\eta\,Q^{\pi}$ evaluated from the same '
+    r"$\theta_{\mathrm{old}}$; $\Delta_{A^{\mu}}\equiv\Delta V^{\pi}(s_0)-\Delta_{Q^{\pi}}$."
+    '\n'
+    r'(Equality is approximate since softmax couples the two directions.)'
 )
 
 
