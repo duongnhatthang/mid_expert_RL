@@ -335,7 +335,9 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
           flush=True)
     _write_progress(output_dir, total, total, elapsed)
 
-    # Replicate alpha=0 results for all teacher values (teacher is irrelevant at alpha=0)
+    # Replicate alpha=0 results for all teacher values (teacher is irrelevant at alpha=0).
+    # Keep visitation_counts reference so downstream plots show Vanilla NPG visitation for
+    # every row. Shallow copy of the np.ndarray is cheap (pickle memoizes identical arrays).
     if mode == 'cap_zeta':
         tcol = 'cap_zeta'
     else:
@@ -351,13 +353,11 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
                     r_copy[tcol] = tv_key
                     r_copy['teacher_capacity'] = tv[0]
                     r_copy['zeta'] = tv[1]
-                    r_copy.pop('visitation_counts', None)
                     all_results.append(r_copy)
             else:
                 if tv != r[tcol]:
                     r_copy = r.copy()
                     r_copy[tcol] = tv
-                    r_copy.pop('visitation_counts', None)
                     all_results.append(r_copy)
 
     # Save CSV
@@ -540,8 +540,117 @@ def plot_heatmaps(df: pd.DataFrame, mode: str, figures_dir: str):
         print(f"Saved {save_path}")
 
 
+def plot_reward_vs_teacher_cap_zeta(df: pd.DataFrame, figures_dir: str):
+    """Cap×Zeta mode: one heatmap per (distance, budget, horizon, alpha) showing
+    mean_reward as a function of (capacity, zeta).
+
+    Laid out as a grid per distance: rows=(budget, horizon), cols=alpha,
+    with (cap, zeta) heatmaps. cap=0 rows are filled with the single collected
+    value across all zeta columns since zeta is a no-op when cap=0.
+    """
+    import matplotlib.pyplot as plt
+
+    goal_pos = _goal_positions('cap_zeta')
+    caps = CAP_ZETA_CAPACITIES
+    zetas = CAP_ZETA_ZETAS
+    # Parse cap_zeta strings in the df into two integer/float columns for pivoting
+    parsed = df['cap_zeta'].astype(str).apply(_parse_cap_zeta)
+    df = df.copy()
+    df['_cap'] = [p[0] for p in parsed]
+    df['_zeta'] = [p[1] for p in parsed]
+
+    metric = 'final_mean_reward'
+    mlabel = 'Mean Reward'
+
+    for dist in DISTANCES:
+        dist_df = df[df['distance'] == dist]
+        bh_pairs = _get_bh_pairs(dist_df)
+        if not bh_pairs:
+            continue
+
+        n_rows = len(bh_pairs)
+        n_cols = len(ALPHA_VALUES)
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                  figsize=(2.4 * n_cols + 1.0, 2.2 * n_rows + 1.2),
+                                  squeeze=False)
+
+        vmax = max(0.01, dist_df[metric].max())
+
+        for ri, (budget, h_type, horizon) in enumerate(bh_pairs):
+            sub = dist_df[(dist_df['sample_budget'] == budget) &
+                          (dist_df['horizon_type'] == h_type)]
+            for ci, alpha in enumerate(ALPHA_VALUES):
+                ax = axes[ri, ci]
+                asub = sub[sub['alpha'] == alpha]
+                # Build (cap x zeta) grid
+                grid = np.full((len(caps), len(zetas)), np.nan)
+                for i, cap in enumerate(caps):
+                    cap_rows = asub[asub['_cap'] == cap]
+                    if cap == 0:
+                        # cap=0 is uniform regardless of zeta: collect anything and
+                        # replicate across the zeta axis so the surface is filled.
+                        if len(cap_rows) > 0:
+                            val = cap_rows[metric].mean()
+                            grid[i, :] = val
+                        continue
+                    for j, z in enumerate(zetas):
+                        cell = cap_rows[np.isclose(cap_rows['_zeta'], z)][metric]
+                        if len(cell) > 0:
+                            grid[i, j] = cell.mean()
+
+                im = ax.imshow(grid, aspect='auto', cmap='viridis',
+                               vmin=0, vmax=vmax, origin='lower')
+                for yi in range(grid.shape[0]):
+                    for xi in range(grid.shape[1]):
+                        val = grid[yi, xi]
+                        if not np.isnan(val):
+                            ax.text(xi, yi, f'{val:.2f}', ha='center', va='center',
+                                    fontsize=6,
+                                    color='white' if val < vmax * 0.6 else 'black')
+                ax.set_xticks(range(len(zetas)))
+                ax.set_yticks(range(len(caps)))
+                if ri == n_rows - 1:
+                    ax.set_xticklabels([f'{z}' for z in zetas], fontsize=6)
+                    ax.set_xlabel('ζ', fontsize=7)
+                else:
+                    ax.set_xticklabels([])
+                if ci == 0:
+                    ax.set_yticklabels([f'{c}' for c in caps], fontsize=6)
+                    ax.set_ylabel(f'{_bh_title(budget, h_type, horizon)}\ncapacity',
+                                  fontsize=6)
+                else:
+                    ax.set_yticklabels([])
+                if ri == 0:
+                    ax.set_title(
+                        'Vanilla NPG' if alpha == 0.0 else f'α={alpha}',
+                        fontsize=8)
+
+        fig.subplots_adjust(right=0.90)
+        cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+        fig.colorbar(im, cax=cax, label=mlabel)
+
+        goals = goal_pos[dist]
+        fig.suptitle(
+            f'Cap × ζ — dist={dist}, goals={goals}\n'
+            f'Rows: (budget, horizon). Columns: α. Cells: mean_reward over 10 seeds.\n'
+            f'cap=0 row is uniform random (ζ is a no-op), replicated across ζ for display.',
+            fontsize=10, fontweight='bold')
+        plt.tight_layout(rect=[0, 0, 0.90, 0.93])
+        save_path = os.path.join(figures_dir, f'cap_zeta_reward_dist{dist}.png')
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Saved {save_path}")
+
+
 def plot_reward_vs_teacher(df: pd.DataFrame, mode: str, figures_dir: str):
-    """Per distance: one row per (budget, horizon) that has data, side-by-side metrics."""
+    """Per distance: one row per (budget, horizon) that has data, side-by-side metrics.
+
+    For cap_zeta mode, delegates to plot_reward_vs_teacher_cap_zeta which renders
+    a 2D (capacity × zeta) heatmap/surface per (budget, horizon, alpha) slice.
+    """
+    if mode == 'cap_zeta':
+        return plot_reward_vs_teacher_cap_zeta(df, figures_dir)
+
     import matplotlib.pyplot as plt
     from matplotlib import cm
 
@@ -754,163 +863,347 @@ def _compute_teacher_advantages(mode, teacher_vals, env, goals, gamma):
     return advantages
 
 
-def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
-    """Visitation grids with an extra column showing teacher advantage A^μ."""
+def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
+    """Cap×ζ visitation grids: one figure per (distance, horizon_type, alpha).
+
+    Each figure stacks all budgets vertically. For each budget, rows=cap,
+    cols=ζ visitation columns + 1 advantage column. cap=0 row is replicated
+    across ζ (no-op); α=0 visitation is shared across all (cap, ζ).
+    """
     from collections import defaultdict
     from tabular_prototype.config import compute_gamma_from_horizon
     import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
 
-    tcol = _teacher_col(mode)
-    budget_vals = sorted(set(r['sample_budget'] for r in all_results))
+    caps = CAP_ZETA_CAPACITIES
+    zetas = CAP_ZETA_ZETAS
+    goal_pos = _goal_positions('cap_zeta')
+    horizons = _get_horizons()
+    budget_vals_all = sorted({r['sample_budget'] for r in all_results})
 
-    goal_pos = _goal_positions(mode)
     for dist in DISTANCES:
         goals = goal_pos[dist]
-        horizons = _get_horizons()
         env = GridEnv(grid_size=GRID_SIZE, goals=goals, horizon=horizons['large'])
 
-        for budget in budget_vals:
-            for h_type in HORIZON_TYPES:
-                groups = defaultdict(list)
-                for r in all_results:
-                    if (r.get('distance') == dist and
-                        r.get('sample_budget') == budget and
-                        r.get('horizon_type') == h_type and
-                        'visitation_counts' in r):
-                        groups[(r[tcol], r['alpha'])].append(r['visitation_counts'])
+        for h_type in HORIZON_TYPES:
+            horizon_val = horizons[h_type]
+            gamma = compute_gamma_from_horizon(horizon_val)
 
-                if not groups:
+            # Pre-compute teacher advantages once per (dist, h_type) — they don't
+            # depend on budget or alpha.
+            tv_strs = [f'cap={c}_z={z}' for c in caps for z in zetas]
+            teacher_advantages = _compute_teacher_advantages(
+                'cap_zeta', tv_strs, env, goals, gamma)
+            adv_grids_full = {}
+            vmax_adv = 0
+            for c in caps:
+                for z in zetas:
+                    A = teacher_advantages.get(f'cap={c}_z={z}')
+                    if A is None:
+                        continue
+                    g = A.max(axis=1).reshape(env.grid_size, env.grid_size)
+                    adv_grids_full[(c, z)] = g
+                    vmax_adv = max(vmax_adv, np.abs(g).max())
+            if vmax_adv == 0:
+                vmax_adv = 1
+
+            # Collect groups: (budget, cap, zeta, alpha) -> list of visitations
+            raw_groups = defaultdict(list)
+            for r in all_results:
+                if (r.get('distance') != dist or
+                    r.get('horizon_type') != h_type or
+                    'visitation_counts' not in r):
+                    continue
+                cap = r.get('teacher_capacity')
+                zeta = r.get('zeta')
+                if cap is None or zeta is None:
+                    continue
+                raw_groups[(
+                    r['sample_budget'], int(cap), float(zeta), float(r.get('alpha', 0.0))
+                )].append(r['visitation_counts'])
+
+            if not raw_groups:
+                continue
+
+            budget_vals = sorted({k[0] for k in raw_groups})
+
+            # Fill cap=0 across ζ and α=0 across all (cap, ζ) — backward-compat
+            # for old pickles that popped visitation_counts on replication.
+            for budget in budget_vals:
+                cap0_per_alpha = defaultdict(list)
+                for (b, cap, z, a), vs in raw_groups.items():
+                    if b == budget and cap == 0:
+                        cap0_per_alpha[a].extend(vs)
+                for a, vs in cap0_per_alpha.items():
+                    if not vs:
+                        continue
+                    for z in zetas:
+                        raw_groups.setdefault((budget, 0, z, a), list(vs))
+
+                any_alpha0 = []
+                for (b, cap, z, a), vs in list(raw_groups.items()):
+                    if b == budget and a == 0.0:
+                        any_alpha0.extend(vs)
+                if any_alpha0:
+                    for c in caps:
+                        for z in zetas:
+                            raw_groups.setdefault((budget, c, z, 0.0), list(any_alpha0))
+
+            visitation_data = {k: np.mean(v, axis=0) for k, v in raw_groups.items()}
+
+            # One plot per alpha: (budget × cap) rows, (zeta + 1 adv) cols
+            for alpha in ALPHA_VALUES:
+                alpha_vis = {(b, c, z): v for (b, c, z, a), v in visitation_data.items()
+                             if a == alpha}
+                if not alpha_vis:
                     continue
 
-                visitation_data = {k: np.mean(v, axis=0) for k, v in groups.items()}
-
-                if mode == 'zeta':
-                    row_keys = sorted(set(k[0] for k in visitation_data))
-                    row_label_fn = lambda k: f'\u03b6={k:.2f}'
-                elif mode == 'cap_zeta':
-                    row_keys = sorted(
-                        set(k[0] for k in visitation_data),
-                        key=_parse_cap_zeta,
-                    )
-                    row_label_fn = lambda k: _teacher_label(mode, k)
-                else:
-                    row_keys = sorted(set(k[0] for k in visitation_data))
-                    cap_labels = {-1: 'no teacher', 0: 'uniform'}
-                    row_label_fn = lambda k: cap_labels.get(k, f'cap={k}')
-
-                col_keys = sorted(set(k[1] for k in visitation_data))
-                col_label_fn = lambda a: 'Vanilla NPG' if a == 0.0 else f'\u03b1={a}'
-
-                # Compute teacher advantages for the extra column
-                horizon_val = horizons[h_type]
-                gamma = compute_gamma_from_horizon(horizon_val)
-                teacher_advantages = _compute_teacher_advantages(
-                    mode, row_keys, env, goals, gamma)
-
-                # Build the grid manually: visitation columns + 1 advantage column
-                n_rows = len(row_keys)
-                n_vis_cols = len(col_keys)
-                n_total_cols = n_vis_cols + 1  # +1 for advantage
-                cell_size = 1.8
-                fig_w = cell_size * n_total_cols + 2.0
-                fig_h = cell_size * n_rows + 1.0
-                fig, axes = plt.subplots(
-                    n_rows, n_total_cols,
-                    figsize=(fig_w, fig_h))
-
-                # Visitation shared vmax
-                vmax_vis = 0
+                # Per-budget vmax (budgets have very different visit scales)
+                vmax_vis_per_budget = {}
                 vis_grids = {}
-                for rk in row_keys:
-                    for ck in col_keys:
-                        vis = visitation_data.get((rk, ck))
-                        if vis is not None:
-                            grid = vis.sum(axis=1).reshape(env.grid_size, env.grid_size)
-                            vis_grids[(rk, ck)] = grid
-                            vmax_vis = max(vmax_vis, grid.max())
-                if vmax_vis == 0:
-                    vmax_vis = 1
+                for (b, c, z), vis in alpha_vis.items():
+                    grid = vis.sum(axis=1).reshape(env.grid_size, env.grid_size)
+                    vis_grids[(b, c, z)] = grid
+                    vmax_vis_per_budget[b] = max(
+                        vmax_vis_per_budget.get(b, 0), grid.max())
 
-                # Advantage shared vmax (absolute)
-                adv_grids = {}
-                vmax_adv = 0
-                for rk in row_keys:
-                    A = teacher_advantages.get(rk)
-                    if A is not None:
-                        # max_a A^μ(s,a) per state
-                        adv_grid = A.max(axis=1).reshape(env.grid_size, env.grid_size)
-                        adv_grids[rk] = adv_grid
-                        vmax_adv = max(vmax_adv, np.abs(adv_grid).max())
-                if vmax_adv == 0:
-                    vmax_adv = 1
+                n_cap = len(caps)
+                n_zeta = len(zetas)
+                n_budget = len(budget_vals)
+                n_cols = n_zeta + 1  # +1 advantage
+                n_rows = n_budget * n_cap
 
-                # Ensure axes is 2D
-                if n_rows == 1:
-                    axes = axes[np.newaxis, :]
-                if n_total_cols == 1:
-                    axes = axes[:, np.newaxis]
+                cell_size = 1.1
+                fig_w = cell_size * n_cols + 2.2
+                fig_h = cell_size * n_rows + 1.4
+                fig, axes = plt.subplots(n_rows, n_cols,
+                                          figsize=(fig_w, fig_h),
+                                          squeeze=False)
 
-                vis_mappable = None
                 adv_mappable = None
 
-                for i, rk in enumerate(row_keys):
-                    # Visitation columns
-                    for j, ck in enumerate(col_keys):
-                        ax = axes[i, j]
-                        grid = vis_grids.get((rk, ck))
+                for bi, budget in enumerate(budget_vals):
+                    vmax_vis = vmax_vis_per_budget.get(budget, 0) or 1
+                    for ci, c in enumerate(caps):
+                        global_row = bi * n_cap + ci
+                        for zi, z in enumerate(zetas):
+                            ax = axes[global_row, zi]
+                            grid = vis_grids.get((budget, c, z))
+                            if grid is not None:
+                                ax.imshow(grid, cmap='hot', origin='upper',
+                                          vmin=0, vmax=vmax_vis)
+                                _annotate_grid(ax, env, goals)
+                            else:
+                                ax.axis('off')
+                            ax.set_xticks([])
+                            ax.set_yticks([])
+                            if zi == 0:
+                                label = f'cap={c}'
+                                if ci == 0:
+                                    label = f'budget={budget}\n{label}'
+                                ax.set_ylabel(label, fontsize=6)
+                            if global_row == 0:
+                                ax.set_title(f'ζ={z}', fontsize=7)
+
+                        # Advantage column (use ζ=1.0 to show the sharp signal)
+                        ax_adv = axes[global_row, n_zeta]
+                        adv_grid = adv_grids_full.get((c, 1.0))
+                        if adv_grid is not None:
+                            im_adv = ax_adv.imshow(adv_grid, cmap='hot', origin='upper',
+                                                   vmin=0, vmax=vmax_adv)
+                            adv_mappable = im_adv
+                            _annotate_grid(ax_adv, env, goals)
+                        else:
+                            ax_adv.text(0.5, 0.5, 'N/A', ha='center', va='center',
+                                        transform=ax_adv.transAxes, fontsize=7, color='gray')
+                            ax_adv.set_xlim(0, 1)
+                            ax_adv.set_ylim(0, 1)
+                        ax_adv.set_xticks([])
+                        ax_adv.set_yticks([])
+                        if global_row == 0:
+                            ax_adv.set_title('A^μ(ζ=1.0)', fontsize=6)
+
+                fig.subplots_adjust(
+                    left=0.10, right=0.88, bottom=0.03, top=0.93,
+                    wspace=0.10, hspace=0.18)
+                if adv_mappable is not None:
+                    cax_adv = fig.add_axes([0.92, 0.25, 0.015, 0.5])
+                    fig.colorbar(adv_mappable, cax=cax_adv, label='Advantage')
+
+                alpha_label = 'Vanilla NPG' if alpha == 0.0 else f'α={alpha}'
+                fig.suptitle(
+                    f'Cap × ζ visitation — dist={dist}, H={horizon_val} ({h_type}), '
+                    f'{alpha_label}\nRows grouped by budget. '
+                    f'Each budget uses its own visit scale.',
+                    fontsize=10, fontweight='bold')
+
+                save_path = os.path.join(
+                    figures_dir,
+                    f'cap_zeta_visit_dist{dist}_{h_type}_alpha{alpha}.png')
+                plt.savefig(save_path, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+
+
+def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
+    """Consolidated visitation grids + teacher advantage column.
+
+    For cap_zeta mode, delegates to plot_visitation_grids_cap_zeta which produces
+    (capacity × zeta) grid figures per (distance, budget, horizon, alpha).
+
+    For zeta/capability modes, produces one figure per (distance, horizon_type).
+    The figure stacks all budgets vertically using thick horizontal separators.
+    Each budget band is a (teacher × alpha) grid of visitation minicells with a
+    shared teacher-advantage column on the right. This reduces the figure count
+    from ~40 (4 dist × 4 budgets × 2 horizons) down to 8 (4 dist × 2 horizons).
+    """
+    if mode == 'cap_zeta':
+        plot_visitation_grids_cap_zeta(all_results, figures_dir)
+        return
+
+    from collections import defaultdict
+    from tabular_prototype.config import compute_gamma_from_horizon
+    import matplotlib.pyplot as plt
+
+    tcol = _teacher_col(mode)
+    goal_pos = _goal_positions(mode)
+    horizons = _get_horizons()
+
+    for dist in DISTANCES:
+        goals = goal_pos[dist]
+        env = GridEnv(grid_size=GRID_SIZE, goals=goals, horizon=horizons['large'])
+
+        for h_type in HORIZON_TYPES:
+            # Collect (budget, teacher_val, alpha) -> list of visitation arrays
+            groups = defaultdict(list)
+            for r in all_results:
+                if (r.get('distance') == dist and
+                    r.get('horizon_type') == h_type and
+                    'visitation_counts' in r):
+                    key = (r['sample_budget'], r[tcol], r['alpha'])
+                    groups[key].append(r['visitation_counts'])
+
+            if not groups:
+                continue
+
+            visitation_data = {k: np.mean(v, axis=0) for k, v in groups.items()}
+
+            budget_vals = sorted({k[0] for k in visitation_data})
+            if mode == 'zeta':
+                row_keys = sorted({k[1] for k in visitation_data})
+                row_label_fn = lambda k: f'\u03b6={k:.2f}'
+            else:
+                row_keys = sorted({k[1] for k in visitation_data})
+                cap_labels = {-1: 'no teacher', 0: 'uniform'}
+                row_label_fn = lambda k: cap_labels.get(k, f'cap={k}')
+
+            col_keys = sorted({k[2] for k in visitation_data})
+            col_label_fn = lambda a: 'Vanilla NPG' if a == 0.0 else f'\u03b1={a}'
+
+            horizon_val = horizons[h_type]
+            gamma = compute_gamma_from_horizon(horizon_val)
+            teacher_advantages = _compute_teacher_advantages(
+                mode, row_keys, env, goals, gamma)
+
+            n_tv = len(row_keys)
+            n_alpha = len(col_keys)
+            n_budget = len(budget_vals)
+            n_cols = n_alpha + 1  # +1 for advantage column
+            n_rows = n_budget * n_tv
+
+            cell_size = 1.1
+            fig_w = cell_size * n_cols + 2.5
+            fig_h = cell_size * n_rows + 1.4
+            fig, axes = plt.subplots(n_rows, n_cols,
+                                      figsize=(fig_w, fig_h),
+                                      squeeze=False)
+
+            # Compute shared vmax PER BUDGET (different budgets have very different
+            # visitation magnitudes, so sharing globally would wash out small budgets)
+            vmax_vis_per_budget = {}
+            vis_grids = {}
+            for (budget, rk, ck), vis in visitation_data.items():
+                grid = vis.sum(axis=1).reshape(env.grid_size, env.grid_size)
+                vis_grids[(budget, rk, ck)] = grid
+                vmax_vis_per_budget[budget] = max(
+                    vmax_vis_per_budget.get(budget, 0), grid.max())
+
+            # Advantage shared across all rows (advantage doesn't depend on budget)
+            adv_grids = {}
+            vmax_adv = 0
+            for rk in row_keys:
+                A = teacher_advantages.get(rk)
+                if A is not None:
+                    g = A.max(axis=1).reshape(env.grid_size, env.grid_size)
+                    adv_grids[rk] = g
+                    vmax_adv = max(vmax_adv, np.abs(g).max())
+            if vmax_adv == 0:
+                vmax_adv = 1
+
+            vis_mappables = {}  # one per budget (for per-budget colorbars)
+            adv_mappable = None
+
+            for bi, budget in enumerate(budget_vals):
+                vmax_vis = vmax_vis_per_budget.get(budget, 0) or 1
+                for ri, rk in enumerate(row_keys):
+                    global_row = bi * n_tv + ri
+                    for ci, ck in enumerate(col_keys):
+                        ax = axes[global_row, ci]
+                        grid = vis_grids.get((budget, rk, ck))
                         if grid is not None:
                             im = ax.imshow(grid, cmap='hot', origin='upper',
                                            vmin=0, vmax=vmax_vis)
-                            vis_mappable = im
-                        _annotate_grid(ax, env, goals)
+                            vis_mappables[budget] = im
+                            _annotate_grid(ax, env, goals)
+                        else:
+                            ax.axis('off')
                         ax.set_xticks([])
                         ax.set_yticks([])
-                        if j == 0:
-                            ax.set_ylabel(row_label_fn(rk), fontsize=8)
-                        if i == 0:
-                            ax.set_title(col_label_fn(ck), fontsize=8)
+                        if ci == 0:
+                            label = row_label_fn(rk)
+                            if ri == 0:
+                                label = f'budget={budget}\n{label}'
+                            ax.set_ylabel(label, fontsize=6)
+                        if global_row == 0:
+                            ax.set_title(col_label_fn(ck), fontsize=7)
 
                     # Advantage column (rightmost)
-                    ax_adv = axes[i, n_vis_cols]
+                    ax_adv = axes[global_row, n_alpha]
                     adv_grid = adv_grids.get(rk)
                     if adv_grid is not None:
                         im_adv = ax_adv.imshow(adv_grid, cmap='hot', origin='upper',
                                                vmin=0, vmax=vmax_adv)
                         adv_mappable = im_adv
+                        _annotate_grid(ax_adv, env, goals)
                     else:
                         ax_adv.text(0.5, 0.5, 'N/A', ha='center', va='center',
-                                    transform=ax_adv.transAxes, fontsize=9, color='gray')
-                    _annotate_grid(ax_adv, env, goals)
+                                    transform=ax_adv.transAxes, fontsize=7, color='gray')
+                        ax_adv.set_xlim(0, 1)
+                        ax_adv.set_ylim(0, 1)
                     ax_adv.set_xticks([])
                     ax_adv.set_yticks([])
-                    if i == 0:
-                        ax_adv.set_title('A\u03bc(s) = max_a A\u03bc(s,a)', fontsize=7)
+                    if global_row == 0:
+                        ax_adv.set_title('A^μ(s) = max_a A^μ(s,a)', fontsize=6)
 
-                # Layout and colorbars
-                fig.subplots_adjust(
-                    left=0.06, right=0.85, bottom=0.04, top=0.90,
-                    wspace=0.12, hspace=0.30)
+            # Layout and colorbars
+            fig.subplots_adjust(
+                left=0.10, right=0.88, bottom=0.03, top=0.93,
+                wspace=0.10, hspace=0.18)
 
-                # Place colorbars in figure-coordinate axes
-                if vis_mappable is not None:
-                    cax1 = fig.add_axes([0.86, 0.15, 0.02, 0.70])
-                    fig.colorbar(vis_mappable, cax=cax1, label='Visits')
-                if adv_mappable is not None:
-                    cax2 = fig.add_axes([0.93, 0.15, 0.02, 0.70])
-                    fig.colorbar(adv_mappable, cax=cax2, label='Advantage')
+            if adv_mappable is not None:
+                cax_adv = fig.add_axes([0.92, 0.25, 0.015, 0.5])
+                fig.colorbar(adv_mappable, cax=cax_adv, label='Advantage')
 
-                fig.suptitle(
-                    f'Visitation + Teacher Advantage: dist={dist}, '
-                    f'budget={budget}, H={horizon_val} ({h_type})',
-                    fontsize=11, fontweight='bold')
+            fig.suptitle(
+                f'Visitation + Teacher Advantage — dist={dist}, H={horizon_val} ({h_type})\n'
+                f'Rows grouped by budget ({budget_vals}). '
+                f'Each budget band uses its own visit scale (not shared across budgets).',
+                fontsize=10, fontweight='bold')
 
-                save_path = os.path.join(
-                    figures_dir,
-                    f'visitation_grid_dist{dist}_budget{budget}_{h_type}.png')
-                plt.savefig(save_path, dpi=150)
-                plt.close(fig)
-                print(f"Saved {save_path}")
+            save_path = os.path.join(
+                figures_dir,
+                f'visitation_grid_dist{dist}_{h_type}.png')
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            print(f"Saved {save_path}")
 
 
 def _annotate_grid(ax, env, goals):
@@ -930,73 +1223,198 @@ def _annotate_grid(ax, env, goals):
                     color='lime', fontweight='bold', fontsize=6)
 
 
+DELTA_V_SUBTITLE = (
+    'Δ_total = V^π(s₀) after update − V^π(s₀) before.    '
+    'Δ_Qπ = hypothetical Qπ-only update (α=0).    Δ_Aμ = Δ_total − Δ_Qπ.    '
+    '(Decomposition is approximate — softmax nonlinearity couples the two components.)'
+)
+
+
+def _avg_diagnostics_by_tv(group_diags: dict) -> dict:
+    """Average per-step diagnostic dicts across seeds for each teacher value.
+
+    Args:
+        group_diags: {teacher_val: [diag_list_seed1, diag_list_seed2, ...]}
+
+    Returns:
+        {teacher_val: [avg_diag_per_step, ...]}
+    """
+    averaged = {}
+    for tv, seed_diag_lists in group_diags.items():
+        n_steps = min(len(d) for d in seed_diag_lists)
+        avg_diags = []
+        for step_i in range(n_steps):
+            step_dicts = [d[step_i] for d in seed_diag_lists]
+            avg = {k: float(np.mean([s[k] for s in step_dicts]))
+                   for k in step_dicts[0]
+                   if isinstance(step_dicts[0][k], (int, float))}
+            avg['step'] = step_i
+            avg_diags.append(avg)
+        averaged[tv] = avg_diags
+    return averaged
+
+
+def _plot_consolidated_diagnostics(
+    groups: dict, mode: str, metric_keys: list, plot_kind: str,
+    title: str, ylabel: str, save_path: str,
+):
+    """Grid plot: rows=budgets, cols=alphas, one line per teacher value.
+
+    metric_keys: list of (key, legend_label) to plot. For Δ-V plot_kind='delta_v',
+    uses stacked bars for qpi+amu with total as a line overlay.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+
+    budgets = sorted({k[2] for k in groups})
+    alphas = sorted({k[3] for k in groups if k[3] != 0.0})
+    if not budgets or not alphas:
+        return
+
+    # Collect all teacher vals appearing in this group
+    tv_set = set()
+    for diags_by_tv in groups.values():
+        tv_set.update(diags_by_tv.keys())
+    teacher_vals = _sort_teacher_vals(pd.Series(list(tv_set)), mode)
+    if not teacher_vals:
+        return
+    colors = cm.tab10(np.linspace(0, 1, max(10, len(teacher_vals))))[:len(teacher_vals)]
+    tv_color = dict(zip(teacher_vals, colors))
+
+    n_rows = len(budgets)
+    n_cols = len(alphas)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                              figsize=(3.0 * n_cols, 2.2 * n_rows + 1.2),
+                              squeeze=False, sharex='col')
+
+    for ri, budget in enumerate(budgets):
+        for ci, alpha in enumerate(alphas):
+            ax = axes[ri, ci]
+            key = next((k for k in groups if k[2] == budget and k[3] == alpha), None)
+            if key is None:
+                ax.set_visible(False)
+                continue
+            diags_by_tv = groups[key]
+
+            if plot_kind == 'delta_v':
+                # One thin line per teacher value with total Δ-V only (stacked bars
+                # would be unreadable at this density).
+                for tv in teacher_vals:
+                    if tv not in diags_by_tv:
+                        continue
+                    diags = diags_by_tv[tv]
+                    steps = [d['step'] for d in diags]
+                    dv_total = [d['delta_v_total'] for d in diags]
+                    ax.plot(steps, dv_total, color=tv_color[tv],
+                            linewidth=1.2, label=_teacher_label(mode, tv))
+                ax.axhline(0, color='gray', linestyle='--', linewidth=0.5)
+            else:
+                for tv in teacher_vals:
+                    if tv not in diags_by_tv:
+                        continue
+                    diags = diags_by_tv[tv]
+                    steps = [d['step'] for d in diags]
+                    for mk_i, (metric, style) in enumerate(metric_keys):
+                        vals = [d[metric] for d in diags]
+                        # Only label the first metric line per teacher — the
+                        # suptitle explains what each line style represents.
+                        line_label = (_teacher_label(mode, tv)
+                                      if mk_i == 0 else None)
+                        ax.plot(steps, vals, color=tv_color[tv],
+                                linewidth=1.2, linestyle=style,
+                                label=line_label)
+
+            ax.grid(True, alpha=0.3)
+            if ri == 0:
+                ax.set_title(f'α={alpha}', fontsize=8)
+            if ci == 0:
+                ax.set_ylabel(f'budget={budget}\n{ylabel}', fontsize=7)
+            if ri == n_rows - 1:
+                ax.set_xlabel('Update step', fontsize=7)
+
+    # Single legend for the whole figure
+    handles_labels = {}
+    for ax in axes.flat:
+        if not ax.get_visible():
+            continue
+        for h, l in zip(*ax.get_legend_handles_labels()):
+            if l and l not in handles_labels:
+                handles_labels[l] = h
+    if handles_labels:
+        fig.legend(handles_labels.values(), handles_labels.keys(),
+                   loc='lower center', ncol=min(len(handles_labels), 6),
+                   fontsize=7, bbox_to_anchor=(0.5, 0.0))
+
+    fig.suptitle(title, fontsize=11, fontweight='bold')
+    plt.tight_layout(rect=[0, 0.07, 1, 0.96])
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
 def _plot_sweep_diagnostics(all_results: list, mode: str, figures_dir: str):
-    """Generate diagnostic plots from sweep results that contain diagnostics data."""
-    from tabular_prototype.visualization import (
-        plot_magnitude_decomposition,
-        plot_delta_v_decomposition,
-        plot_amu_distribution_evolution,
-        plot_entropy_trajectory,
-    )
+    """Generate consolidated diagnostic plots from sweep results.
+
+    Produces one plot per (distance, horizon_type) × metric:
+      - magnitude_dist{D}_{h_type}.png   — ||(1-α)Q^π|| and ||α A^μ|| L2 norms
+      - delta_v_dist{D}_{h_type}.png     — per-step ΔV^π(s₀)
+      - entropy_dist{D}_{h_type}.png     — policy entropy at s₀
+
+    Each plot is a grid of (budget × alpha) subplots with one line per teacher value.
+    A^μ distribution stats are not plotted (they are constant — A^μ is fixed).
+    """
     from collections import defaultdict
 
     tcol = _teacher_col(mode)
     diag_dir = os.path.join(figures_dir, 'diagnostics')
     os.makedirs(diag_dir, exist_ok=True)
 
-    # Group results by (distance, horizon_type, budget, alpha)
-    # For each group, average diagnostics across seeds per teacher value
-    groups = defaultdict(lambda: defaultdict(list))
+    # Group: (dist, h_type, budget, alpha) -> {teacher_val: [seed_diag_lists]}
+    raw_groups = defaultdict(lambda: defaultdict(list))
     for r in all_results:
         if not r.get('diagnostics'):
             continue
         key = (r.get('distance'), r.get('horizon_type'),
                r.get('sample_budget'), r.get('alpha', 0.0))
-        tv = r[tcol]
-        groups[key][tv].append(r['diagnostics'])
+        raw_groups[key][r[tcol]].append(r['diagnostics'])
 
-    for (dist, h_type, budget, alpha), teacher_diags in groups.items():
-        if alpha == 0.0:
-            continue  # No teacher signal at alpha=0, diagnostics are trivial
+    # Average diagnostics per (dist, h_type, budget, alpha) -> tv -> [avg_step_diags]
+    avg_groups = {k: _avg_diagnostics_by_tv(v) for k, v in raw_groups.items()}
 
-        # Average diagnostics across seeds for each teacher value
-        diagnostics_by_label = {}
-        for tv, seed_diag_lists in teacher_diags.items():
-            label = _teacher_label(mode, tv)
-            # Average each metric across seeds at each step
-            n_steps = min(len(d) for d in seed_diag_lists)
-            avg_diags = []
-            for step_i in range(n_steps):
-                step_dicts = [d[step_i] for d in seed_diag_lists]
-                avg = {k: np.mean([s[k] for s in step_dicts])
-                       for k in step_dicts[0] if isinstance(step_dicts[0][k], (int, float))}
-                avg['step'] = step_i
-                avg_diags.append(avg)
-            diagnostics_by_label[label] = avg_diags
+    # Further organize by (dist, h_type)
+    by_dist_h = defaultdict(dict)
+    for (dist, h_type, budget, alpha), tv_diags in avg_groups.items():
+        by_dist_h[(dist, h_type)][(dist, h_type, budget, alpha)] = tv_diags
 
-        if not diagnostics_by_label:
-            continue
+    for (dist, h_type), sub_groups in by_dist_h.items():
+        suffix = f'dist{dist}_{h_type}'
+        base_title = f'dist={dist}, horizon={h_type}'
 
-        suffix = f'dist{dist}_budget{budget}_{h_type}_alpha{alpha}'
-
-        plot_magnitude_decomposition(
-            diagnostics_by_label,
-            title=f'Signal Magnitude: dist={dist}, budget={budget}, H={h_type}, α={alpha}',
+        _plot_consolidated_diagnostics(
+            sub_groups, mode,
+            metric_keys=[('q_pi_l2', '-'), ('a_mu_l2', '--')],
+            plot_kind='magnitude',
+            title=(f'Signal Magnitude (L2) — {base_title}\n'
+                   f'Solid = ||(1-α)·Q^π||,   Dashed = ||α·A^μ||'),
+            ylabel='L2 norm',
             save_path=os.path.join(diag_dir, f'magnitude_{suffix}.png'),
         )
-        plot_delta_v_decomposition(
-            diagnostics_by_label,
-            title=f'Delta-V: dist={dist}, budget={budget}, H={h_type}, α={alpha}',
+
+        _plot_consolidated_diagnostics(
+            sub_groups, mode,
+            metric_keys=[],
+            plot_kind='delta_v',
+            title=(f'Per-step ΔV^π(s₀) — {base_title}\n'
+                   f'{DELTA_V_SUBTITLE}'),
+            ylabel='ΔV^π(s₀)',
             save_path=os.path.join(diag_dir, f'delta_v_{suffix}.png'),
         )
-        plot_amu_distribution_evolution(
-            diagnostics_by_label,
-            title=f'A^mu Stats: dist={dist}, budget={budget}, H={h_type}, α={alpha}',
-            save_path=os.path.join(diag_dir, f'amu_stats_{suffix}.png'),
-        )
-        plot_entropy_trajectory(
-            diagnostics_by_label,
-            title=f'Entropy: dist={dist}, budget={budget}, H={h_type}, α={alpha}',
+
+        _plot_consolidated_diagnostics(
+            sub_groups, mode,
+            metric_keys=[('policy_entropy_start', '-')],
+            plot_kind='entropy',
+            title=f'Policy entropy at s₀ — {base_title}',
+            ylabel='Entropy (nats)',
             save_path=os.path.join(diag_dir, f'entropy_{suffix}.png'),
         )
 
