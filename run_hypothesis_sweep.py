@@ -1,11 +1,13 @@
 """
 Comprehensive parameter sweep to test the mid-teacher-wins hypothesis.
 
-Two modes:
+Three modes:
   --mode zeta        Continuous mixture teacher: mu(zeta) = zeta*pi* + (1-zeta)*uniform
                      Uses 1 goal per distance.
   --mode capability  Discrete knowledge teacher: capacity in {-1, 0, 1, 2, 3}
                      Uses 3 goals per distance (so cap=1,2 are "mid-capacity").
+  --mode cap_zeta    Combined: sweep (capacity, zeta) pairs.
+                     Uses 3 goals per distance, capacity in {0,1,2,3}, zeta in {0.25,0.5,0.75,1.0}.
 
 Sweeps alpha, budget, horizon, and goal distance on a 9x9 grid.
 Budgets are loaded from calibration.json (run run_calibration.py first).
@@ -50,6 +52,11 @@ CAP_GOAL_POSITIONS = {
 ZETA_VALUES = [0.0, 0.25, 0.5, 0.75, 1.0]
 CAP_VALUES = [-1, 0, 1, 2, 3]
 
+# Cap-zeta mode: 3 goals per distance, sweep (capacity, zeta)
+CAP_ZETA_GOAL_POSITIONS = CAP_GOAL_POSITIONS  # reuse capability mode goals
+CAP_ZETA_CAPACITIES = [0, 1, 2, 3]
+CAP_ZETA_ZETAS = [0.25, 0.5, 0.75, 1.0]
+
 ALPHA_VALUES = [0.0, 0.1, 0.25, 0.5, 0.75, 1.0]
 
 HORIZON_TYPES = ['small', 'large']
@@ -69,7 +76,9 @@ def _get_horizons():
 
 
 def _goal_positions(mode: str):
-    return ZETA_GOAL_POSITIONS if mode == 'zeta' else CAP_GOAL_POSITIONS
+    if mode == 'zeta':
+        return ZETA_GOAL_POSITIONS
+    return CAP_GOAL_POSITIONS  # both 'capability' and 'cap_zeta' use 3-goal positions
 
 
 def _load_calibrated_budgets(mode: str):
@@ -150,8 +159,6 @@ def _run_single_experiment(args_tuple):
     goal_pos = _goal_positions(mode)
     goals = goal_pos[dist]
     horizon = horizons[h_type]
-    teacher_key = 'zeta' if mode == 'zeta' else 'teacher_capacity'
-
     kwargs = dict(
         grid_size=GRID_SIZE,
         goals=goals,
@@ -167,13 +174,26 @@ def _run_single_experiment(args_tuple):
     )
     if mode == 'zeta':
         kwargs['zeta'] = teacher_val
+        teacher_key = 'zeta'
+    elif mode == 'cap_zeta':
+        cap, zeta = teacher_val
+        kwargs['teacher_capacity'] = cap
+        kwargs['zeta'] = zeta
+        teacher_key = 'cap_zeta'
     else:
         kwargs['teacher_capacity'] = teacher_val
+        teacher_key = 'teacher_capacity'
 
     result = run_experiment(**kwargs)
     result['distance'] = dist
     result['horizon_type'] = h_type
-    result[teacher_key] = teacher_val
+
+    if mode == 'cap_zeta':
+        result['teacher_capacity'] = cap
+        result['zeta'] = zeta
+        result['cap_zeta'] = f'cap={cap}_z={zeta}'
+    else:
+        result[teacher_key] = teacher_val
 
     # Extract final V^π(s_0) values from history
     if result.get('history'):
@@ -213,6 +233,10 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
 
     if mode == 'zeta':
         teacher_values = ZETA_VALUES
+    elif mode == 'cap_zeta':
+        teacher_values = [
+            (cap, z) for cap in CAP_ZETA_CAPACITIES for z in CAP_ZETA_ZETAS
+        ]
     else:
         teacher_values = CAP_VALUES
 
@@ -235,6 +259,13 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
     ):
         if alpha == 0.0 and tv != teacher_values[0]:
             continue
+
+        # Cap=0 with any zeta is always uniform, skip duplicates
+        if mode == 'cap_zeta':
+            cap, zeta = tv
+            if cap == 0 and zeta != CAP_ZETA_ZETAS[0]:
+                continue
+
         budget_list = budgets_map[(dist, h_type)] if budgets_map else FALLBACK_BUDGETS
         for budget in budget_list:
             configs.append((tv, alpha, budget, h_type, dist, seed))
@@ -305,18 +336,37 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
     _write_progress(output_dir, total, total, elapsed)
 
     # Replicate alpha=0 results for all teacher values (teacher is irrelevant at alpha=0)
-    tcol = 'zeta' if mode == 'zeta' else 'teacher_capacity'
+    if mode == 'cap_zeta':
+        tcol = 'cap_zeta'
+    else:
+        tcol = 'zeta' if mode == 'zeta' else 'teacher_capacity'
+
     alpha_zero_results = [r for r in all_results if r.get('alpha') == 0.0]
     for r in list(alpha_zero_results):
         for tv in teacher_values:
-            if tv != r[tcol]:
-                r_copy = r.copy()
-                r_copy[tcol] = tv
-                r_copy.pop('visitation_counts', None)
-                all_results.append(r_copy)
+            if mode == 'cap_zeta':
+                tv_key = f'cap={tv[0]}_z={tv[1]}'
+                if tv_key != r.get(tcol):
+                    r_copy = r.copy()
+                    r_copy[tcol] = tv_key
+                    r_copy['teacher_capacity'] = tv[0]
+                    r_copy['zeta'] = tv[1]
+                    r_copy.pop('visitation_counts', None)
+                    all_results.append(r_copy)
+            else:
+                if tv != r[tcol]:
+                    r_copy = r.copy()
+                    r_copy[tcol] = tv
+                    r_copy.pop('visitation_counts', None)
+                    all_results.append(r_copy)
 
     # Save CSV
-    if mode == 'zeta':
+    if mode == 'cap_zeta':
+        fieldnames = ['teacher_capacity', 'zeta', 'cap_zeta', 'alpha', 'sample_budget', 'horizon',
+                       'horizon_type', 'distance', 'seed', 'final_mean_reward',
+                       'final_V_discounted', 'final_goal_rate',
+                       'final_unique_sa', 'final_state_entropy']
+    elif mode == 'zeta':
         fieldnames = ['zeta', 'alpha', 'sample_budget', 'horizon', 'horizon_type',
                        'distance', 'seed', 'final_mean_reward', 'final_V_discounted',
                        'final_goal_rate', 'final_unique_sa', 'final_state_entropy']
@@ -353,12 +403,20 @@ METRICS = [
 
 
 def _teacher_col(mode: str) -> str:
-    return 'zeta' if mode == 'zeta' else 'teacher_capacity'
+    if mode == 'zeta':
+        return 'zeta'
+    if mode == 'cap_zeta':
+        return 'cap_zeta'
+    return 'teacher_capacity'
 
 
 def _teacher_label(mode: str, val) -> str:
     if mode == 'zeta':
         return f'\u03b6={val:.2f}'
+    if mode == 'cap_zeta':
+        if isinstance(val, str):
+            return val.replace('cap=', 'c').replace('_z=', '/\u03b6=')
+        return str(val)
     return {-1: 'no teacher', 0: 'uniform'}.get(val, f'cap={val}')
 
 
@@ -987,7 +1045,7 @@ def plot_exact_vs_sample_comparison(
 def main():
     parser = argparse.ArgumentParser(
         description='Comprehensive hypothesis sweep (zeta or capability)')
-    parser.add_argument('--mode', choices=['zeta', 'capability'], required=True,
+    parser.add_argument('--mode', choices=['zeta', 'capability', 'cap_zeta'], required=True,
                         help='Teacher parameterization to sweep')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Output directory (default: results/{mode}_sweep/<timestamp>)')
