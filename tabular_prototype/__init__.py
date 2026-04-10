@@ -83,6 +83,10 @@ from .visualization import (
     plot_2x2_results_zeta,
     plot_learning_curves,
     plot_learning_curves_improved,
+    plot_magnitude_decomposition,
+    plot_delta_v_decomposition,
+    plot_amu_distribution_evolution,
+    plot_entropy_trajectory,
 )
 
 __all__ = [
@@ -119,4 +123,6 @@ __all__ = [
     "visualize_visitation_composite_grid",
     "plot_2x2_results", "plot_2x2_results_zeta",
     "plot_learning_curves", "plot_learning_curves_improved",
+    "plot_magnitude_decomposition", "plot_delta_v_decomposition",
+    "plot_amu_distribution_evolution", "plot_entropy_trajectory",
 ]
