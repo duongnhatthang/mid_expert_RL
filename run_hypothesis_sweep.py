@@ -562,31 +562,27 @@ def plot_distance_effect(df: pd.DataFrame, mode: str, figures_dir: str):
 
 
 def _compute_teacher_advantages(mode, teacher_vals, env, goals, gamma):
-    """Compute teacher advantage A^μ(s,a) = Q^μ(s,a) - V^μ(s) for each teacher value.
+    """Compute teacher advantage A^mu(s,a) for each teacher value.
     Returns dict: teacher_val -> (n_states, n_actions) array, or None if no teacher."""
-    from tabular_prototype.teacher import (
-        compute_uniform_random_teacher_values,
-        compute_teacher_values,
-        compute_mixture_teacher_values,
-    )
+    from tabular_prototype.teacher import compute_teacher_values_auto
+
     advantages = {}
     for tv in teacher_vals:
         if mode == 'zeta':
-            if tv == 0.0:
-                # zeta=0 is uniform random
-                Q_mu, V_mu = compute_uniform_random_teacher_values(env, gamma)
-            else:
-                Q_mu, V_mu = compute_mixture_teacher_values(env, tv, gamma)
+            Q_mu, V_mu, _ = compute_teacher_values_auto(
+                env, env.goals, zeta=tv, gamma=gamma)
             advantages[tv] = Q_mu - V_mu[:, None]
         else:
             if tv == -1:
-                advantages[tv] = None  # no teacher
+                advantages[tv] = None
             elif tv == 0:
-                Q_mu, V_mu = compute_uniform_random_teacher_values(env, gamma)
+                Q_mu, V_mu, _ = compute_teacher_values_auto(
+                    env, env.goals, zeta=0.0, gamma=gamma)
                 advantages[tv] = Q_mu - V_mu[:, None]
             else:
                 known_goals = goals[:tv]
-                Q_mu, V_mu = compute_teacher_values(env, known_goals, gamma)
+                Q_mu, V_mu, _ = compute_teacher_values_auto(
+                    env, known_goals, zeta=1.0, gamma=gamma)
                 advantages[tv] = Q_mu - V_mu[:, None]
     return advantages
 
@@ -761,6 +757,79 @@ def _annotate_grid(ax, env, goals):
                     color='lime', fontweight='bold', fontsize=6)
 
 
+def _plot_sweep_diagnostics(all_results: list, mode: str, figures_dir: str):
+    """Generate diagnostic plots from sweep results that contain diagnostics data."""
+    from tabular_prototype.visualization import (
+        plot_magnitude_decomposition,
+        plot_delta_v_decomposition,
+        plot_amu_distribution_evolution,
+        plot_entropy_trajectory,
+    )
+    from collections import defaultdict
+
+    tcol = _teacher_col(mode)
+    diag_dir = os.path.join(figures_dir, 'diagnostics')
+    os.makedirs(diag_dir, exist_ok=True)
+
+    # Group results by (distance, horizon_type, budget, alpha)
+    # For each group, average diagnostics across seeds per teacher value
+    groups = defaultdict(lambda: defaultdict(list))
+    for r in all_results:
+        if not r.get('diagnostics'):
+            continue
+        key = (r.get('distance'), r.get('horizon_type'),
+               r.get('sample_budget'), r.get('alpha', 0.0))
+        tv = r[tcol]
+        groups[key][tv].append(r['diagnostics'])
+
+    for (dist, h_type, budget, alpha), teacher_diags in groups.items():
+        if alpha == 0.0:
+            continue  # No teacher signal at alpha=0, diagnostics are trivial
+
+        # Average diagnostics across seeds for each teacher value
+        diagnostics_by_label = {}
+        for tv, seed_diag_lists in teacher_diags.items():
+            label = _teacher_label(mode, tv)
+            # Average each metric across seeds at each step
+            n_steps = min(len(d) for d in seed_diag_lists)
+            avg_diags = []
+            for step_i in range(n_steps):
+                step_dicts = [d[step_i] for d in seed_diag_lists]
+                avg = {k: np.mean([s[k] for s in step_dicts])
+                       for k in step_dicts[0] if isinstance(step_dicts[0][k], (int, float))}
+                avg['step'] = step_i
+                avg_diags.append(avg)
+            diagnostics_by_label[label] = avg_diags
+
+        if not diagnostics_by_label:
+            continue
+
+        suffix = f'dist{dist}_budget{budget}_{h_type}_alpha{alpha}'
+
+        plot_magnitude_decomposition(
+            diagnostics_by_label,
+            title=f'Signal Magnitude: dist={dist}, budget={budget}, H={h_type}, α={alpha}',
+            save_path=os.path.join(diag_dir, f'magnitude_{suffix}.png'),
+        )
+        plot_delta_v_decomposition(
+            diagnostics_by_label,
+            title=f'Delta-V: dist={dist}, budget={budget}, H={h_type}, α={alpha}',
+            save_path=os.path.join(diag_dir, f'delta_v_{suffix}.png'),
+        )
+        plot_amu_distribution_evolution(
+            diagnostics_by_label,
+            title=f'A^mu Stats: dist={dist}, budget={budget}, H={h_type}, α={alpha}',
+            save_path=os.path.join(diag_dir, f'amu_stats_{suffix}.png'),
+        )
+        plot_entropy_trajectory(
+            diagnostics_by_label,
+            title=f'Entropy: dist={dist}, budget={budget}, H={h_type}, α={alpha}',
+            save_path=os.path.join(diag_dir, f'entropy_{suffix}.png'),
+        )
+
+    print(f"Diagnostic plots saved to {diag_dir}/")
+
+
 # =========================================================================
 # Main
 # =========================================================================
@@ -818,6 +887,9 @@ def main():
     if all_results is not None:
         print("\nGenerating visitation grids...")
         plot_visitation_grids(all_results, args.mode, figures_dir)
+
+        print("\nGenerating diagnostic plots...")
+        _plot_sweep_diagnostics(all_results, args.mode, figures_dir)
     else:
         print("\nSkipping visitation grids (no pickle cache with visitation data)")
 
