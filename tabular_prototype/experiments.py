@@ -50,10 +50,17 @@ def run_experiment(
     gamma = compute_gamma_from_horizon(horizon)
     if teacher_capacity == -1 and zeta is None:
         Q_mu, V_mu = None, None
+    elif zeta is not None and teacher_capacity is not None and teacher_capacity > 0:
+        # Combined cap+zeta mode: use subset goals with zeta smoothing
+        known_goals = goals[:teacher_capacity]
+        Q_mu, V_mu, gamma = compute_teacher_values_auto(
+            env, known_goals, zeta=zeta, gamma=gamma)
     elif zeta is not None:
+        # Zeta-only mode: use all goals with zeta smoothing
         Q_mu, V_mu, gamma = compute_teacher_values_auto(
             env, env.goals, zeta=zeta, gamma=gamma)
     else:
+        # Capability-only mode
         known_goals = goals[:teacher_capacity] if teacher_capacity > 0 else goals
         effective_zeta = 0.0 if teacher_capacity == 0 else 1.0
         Q_mu, V_mu, gamma = compute_teacher_values_auto(

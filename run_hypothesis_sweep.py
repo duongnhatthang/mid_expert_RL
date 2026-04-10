@@ -1,11 +1,13 @@
 """
 Comprehensive parameter sweep to test the mid-teacher-wins hypothesis.
 
-Two modes:
+Three modes:
   --mode zeta        Continuous mixture teacher: mu(zeta) = zeta*pi* + (1-zeta)*uniform
                      Uses 1 goal per distance.
   --mode capability  Discrete knowledge teacher: capacity in {-1, 0, 1, 2, 3}
                      Uses 3 goals per distance (so cap=1,2 are "mid-capacity").
+  --mode cap_zeta    Combined: sweep (capacity, zeta) pairs.
+                     Uses 3 goals per distance, capacity in {0,1,2,3}, zeta in {0.25,0.5,0.75,1.0}.
 
 Sweeps alpha, budget, horizon, and goal distance on a 9x9 grid.
 Budgets are loaded from calibration.json (run run_calibration.py first).
@@ -50,6 +52,11 @@ CAP_GOAL_POSITIONS = {
 ZETA_VALUES = [0.0, 0.25, 0.5, 0.75, 1.0]
 CAP_VALUES = [-1, 0, 1, 2, 3]
 
+# Cap-zeta mode: 3 goals per distance, sweep (capacity, zeta)
+CAP_ZETA_GOAL_POSITIONS = CAP_GOAL_POSITIONS  # reuse capability mode goals
+CAP_ZETA_CAPACITIES = [0, 1, 2, 3]
+CAP_ZETA_ZETAS = [0.25, 0.5, 0.75, 1.0]
+
 ALPHA_VALUES = [0.0, 0.1, 0.25, 0.5, 0.75, 1.0]
 
 HORIZON_TYPES = ['small', 'large']
@@ -69,7 +76,9 @@ def _get_horizons():
 
 
 def _goal_positions(mode: str):
-    return ZETA_GOAL_POSITIONS if mode == 'zeta' else CAP_GOAL_POSITIONS
+    if mode == 'zeta':
+        return ZETA_GOAL_POSITIONS
+    return CAP_GOAL_POSITIONS  # both 'capability' and 'cap_zeta' use 3-goal positions
 
 
 def _load_calibrated_budgets(mode: str):
@@ -102,40 +111,89 @@ def _load_calibrated_budgets(mode: str):
     return budgets_map
 
 
+SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
+
+
+def _load_sample_calibration(mode: str):
+    """Load per-config sample calibration (LR, traj_per_update, budgets)."""
+    n_goals = 1 if mode == 'zeta' else 3
+
+    if not os.path.exists(SAMPLE_CALIBRATION_PATH):
+        print("ERROR: Sample calibration not found!", flush=True)
+        print(f"  Run: PYTHONPATH=. python run_calibration.py --mode sample", flush=True)
+        return None
+
+    with open(SAMPLE_CALIBRATION_PATH) as f:
+        calibration = json.load(f)
+
+    sample_config = {}  # (dist, h_type) -> {lr, tpu, budgets}
+    for dist in DISTANCES:
+        for h_type in HORIZON_TYPES:
+            key = f"dist={dist}_{h_type}_ng={n_goals}_grid={GRID_SIZE}"
+            if key in calibration:
+                c = calibration[key]
+                sample_config[(dist, h_type)] = {
+                    'lr': c['best_lr'],
+                    'trajectories_per_update': c['best_traj_per_update'],
+                    'budgets': c['budgets'],
+                }
+            else:
+                print(f"WARNING: No sample calibration for {key}.", flush=True)
+                sample_config[(dist, h_type)] = {
+                    'lr': 0.1,
+                    'trajectories_per_update': 10,
+                    'budgets': FALLBACK_BUDGETS,
+                }
+
+    return sample_config
+
+
 # =========================================================================
 # Sweep runner
 # =========================================================================
 
 def _run_single_experiment(args_tuple):
     """Worker function for multiprocessing. Returns result dict."""
-    mode, teacher_val, alpha, budget, h_type, dist, seed, horizons = args_tuple
+    (mode, teacher_val, alpha, budget, h_type, dist, seed,
+     horizons, exact_gradient, lr, traj_per_update) = args_tuple
     goal_pos = _goal_positions(mode)
     goals = goal_pos[dist]
     horizon = horizons[h_type]
-    teacher_key = 'zeta' if mode == 'zeta' else 'teacher_capacity'
-
     kwargs = dict(
         grid_size=GRID_SIZE,
         goals=goals,
         horizon=horizon,
         sample_budget=budget,
         alpha=alpha,
-        lr=0.5,
-        trajectories_per_update=10,
+        lr=lr,
+        trajectories_per_update=traj_per_update,
         seed=seed,
         eval_interval=5,
         eval_n_episodes=50,
-        exact_gradient=True,
+        exact_gradient=exact_gradient,
     )
     if mode == 'zeta':
         kwargs['zeta'] = teacher_val
+        teacher_key = 'zeta'
+    elif mode == 'cap_zeta':
+        cap, zeta = teacher_val
+        kwargs['teacher_capacity'] = cap
+        kwargs['zeta'] = zeta
+        teacher_key = 'cap_zeta'
     else:
         kwargs['teacher_capacity'] = teacher_val
+        teacher_key = 'teacher_capacity'
 
     result = run_experiment(**kwargs)
     result['distance'] = dist
     result['horizon_type'] = h_type
-    result[teacher_key] = teacher_val
+
+    if mode == 'cap_zeta':
+        result['teacher_capacity'] = cap
+        result['zeta'] = zeta
+        result['cap_zeta'] = f'cap={cap}_z={zeta}'
+    else:
+        result[teacher_key] = teacher_val
 
     # Extract final V^π(s_0) values from history
     if result.get('history'):
@@ -167,17 +225,31 @@ def _write_progress(output_dir, completed, total, elapsed):
     os.replace(tmp_path, final_path)
 
 
-def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1) -> list:
+def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
+              exact_gradient: bool = True) -> list:
     """Run all experiments for the given mode, save CSV, return result dicts."""
     horizons = _get_horizons()
     csv_path = os.path.join(output_dir, f'{mode}_sweep_results.csv')
 
     if mode == 'zeta':
         teacher_values = ZETA_VALUES
+    elif mode == 'cap_zeta':
+        teacher_values = [
+            (cap, z) for cap in CAP_ZETA_CAPACITIES for z in CAP_ZETA_ZETAS
+        ]
     else:
         teacher_values = CAP_VALUES
 
-    budgets_map = _load_calibrated_budgets(mode)
+    if exact_gradient:
+        budgets_map = _load_calibrated_budgets(mode)
+        default_lr = 0.5
+        default_tpu = 10
+        sample_config = None
+    else:
+        sample_config = _load_sample_calibration(mode)
+        budgets_map = {k: v['budgets'] for k, v in sample_config.items()} if sample_config else None
+        default_lr = 0.1
+        default_tpu = 10
 
     # Build configs with per-(dist, h_type) budgets
     configs = []
@@ -187,6 +259,13 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1) -> l
     ):
         if alpha == 0.0 and tv != teacher_values[0]:
             continue
+
+        # Cap=0 with any zeta is always uniform, skip duplicates
+        if mode == 'cap_zeta':
+            cap, zeta = tv
+            if cap == 0 and zeta != CAP_ZETA_ZETAS[0]:
+                continue
+
         budget_list = budgets_map[(dist, h_type)] if budgets_map else FALLBACK_BUDGETS
         for budget in budget_list:
             configs.append((tv, alpha, budget, h_type, dist, seed))
@@ -209,10 +288,19 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1) -> l
     print(f"Workers:        {n_workers}", flush=True)
     print(flush=True)
 
-    worker_args = [
-        (mode, tv, alpha, budget, h_type, dist, seed, horizons)
-        for tv, alpha, budget, h_type, dist, seed in configs
-    ]
+    worker_args = []
+    for tv, alpha, budget, h_type, dist, seed in configs:
+        if sample_config and (dist, h_type) in sample_config:
+            sc = sample_config[(dist, h_type)]
+            lr = sc['lr']
+            tpu = sc['trajectories_per_update']
+        else:
+            lr = default_lr
+            tpu = default_tpu
+        worker_args.append(
+            (mode, tv, alpha, budget, h_type, dist, seed,
+             horizons, exact_gradient, lr, tpu)
+        )
 
     t0 = time.time()
 
@@ -248,18 +336,37 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1) -> l
     _write_progress(output_dir, total, total, elapsed)
 
     # Replicate alpha=0 results for all teacher values (teacher is irrelevant at alpha=0)
-    tcol = 'zeta' if mode == 'zeta' else 'teacher_capacity'
+    if mode == 'cap_zeta':
+        tcol = 'cap_zeta'
+    else:
+        tcol = 'zeta' if mode == 'zeta' else 'teacher_capacity'
+
     alpha_zero_results = [r for r in all_results if r.get('alpha') == 0.0]
     for r in list(alpha_zero_results):
         for tv in teacher_values:
-            if tv != r[tcol]:
-                r_copy = r.copy()
-                r_copy[tcol] = tv
-                r_copy.pop('visitation_counts', None)
-                all_results.append(r_copy)
+            if mode == 'cap_zeta':
+                tv_key = f'cap={tv[0]}_z={tv[1]}'
+                if tv_key != r.get(tcol):
+                    r_copy = r.copy()
+                    r_copy[tcol] = tv_key
+                    r_copy['teacher_capacity'] = tv[0]
+                    r_copy['zeta'] = tv[1]
+                    r_copy.pop('visitation_counts', None)
+                    all_results.append(r_copy)
+            else:
+                if tv != r[tcol]:
+                    r_copy = r.copy()
+                    r_copy[tcol] = tv
+                    r_copy.pop('visitation_counts', None)
+                    all_results.append(r_copy)
 
     # Save CSV
-    if mode == 'zeta':
+    if mode == 'cap_zeta':
+        fieldnames = ['teacher_capacity', 'zeta', 'cap_zeta', 'alpha', 'sample_budget', 'horizon',
+                       'horizon_type', 'distance', 'seed', 'final_mean_reward',
+                       'final_V_discounted', 'final_goal_rate',
+                       'final_unique_sa', 'final_state_entropy']
+    elif mode == 'zeta':
         fieldnames = ['zeta', 'alpha', 'sample_budget', 'horizon', 'horizon_type',
                        'distance', 'seed', 'final_mean_reward', 'final_V_discounted',
                        'final_goal_rate', 'final_unique_sa', 'final_state_entropy']
@@ -296,12 +403,20 @@ METRICS = [
 
 
 def _teacher_col(mode: str) -> str:
-    return 'zeta' if mode == 'zeta' else 'teacher_capacity'
+    if mode == 'zeta':
+        return 'zeta'
+    if mode == 'cap_zeta':
+        return 'cap_zeta'
+    return 'teacher_capacity'
 
 
 def _teacher_label(mode: str, val) -> str:
     if mode == 'zeta':
         return f'\u03b6={val:.2f}'
+    if mode == 'cap_zeta':
+        if isinstance(val, str):
+            return val.replace('cap=', 'c').replace('_z=', '/\u03b6=')
+        return str(val)
     return {-1: 'no teacher', 0: 'uniform'}.get(val, f'cap={val}')
 
 
@@ -830,6 +945,99 @@ def _plot_sweep_diagnostics(all_results: list, mode: str, figures_dir: str):
     print(f"Diagnostic plots saved to {diag_dir}/")
 
 
+def plot_exact_vs_sample_comparison(
+    exact_csv: str, sample_csv: str, mode: str, figures_dir: str
+):
+    """Side-by-side and difference heatmaps comparing exact vs sample."""
+    import matplotlib.pyplot as plt
+
+    df_exact = pd.read_csv(exact_csv)
+    df_sample = pd.read_csv(sample_csv)
+
+    tcol = _teacher_col(mode)
+    teacher_vals = sorted(df_exact[tcol].unique(), key=float)
+    os.makedirs(figures_dir, exist_ok=True)
+
+    for dist in DISTANCES:
+        de = df_exact[df_exact['distance'] == dist]
+        ds = df_sample[df_sample['distance'] == dist]
+
+        for h_type in HORIZON_TYPES:
+            he = de[de['horizon_type'] == h_type]
+            hs = ds[ds['horizon_type'] == h_type]
+
+            budgets_e = sorted(he['sample_budget'].unique())
+            budgets_s = sorted(hs['sample_budget'].unique())
+            n_budgets = min(len(budgets_e), len(budgets_s))
+            if n_budgets == 0:
+                continue
+
+            fig, axes = plt.subplots(n_budgets, 3, figsize=(15, 4 * n_budgets),
+                                      squeeze=False)
+
+            for bi in range(n_budgets):
+                for mi, (df_cur, budget, label) in enumerate([
+                    (he, budgets_e[bi], f'Exact (budget={budgets_e[bi]})'),
+                    (hs, budgets_s[bi], f'Sample (budget={budgets_s[bi]})'),
+                ]):
+                    ax = axes[bi, mi]
+                    sub = df_cur[df_cur['sample_budget'] == budget]
+                    pivot = sub.pivot_table(
+                        values='final_mean_reward', index=tcol,
+                        columns='alpha', aggfunc='mean'
+                    )
+                    pivot = pivot.reindex(index=teacher_vals, columns=ALPHA_VALUES)
+                    vmax = max(0.01, pivot.values[~np.isnan(pivot.values)].max()) \
+                        if not np.all(np.isnan(pivot.values)) else 1.0
+
+                    ax.imshow(pivot.values, aspect='auto', cmap='viridis', vmin=0, vmax=vmax)
+                    for yi in range(pivot.shape[0]):
+                        for xi in range(pivot.shape[1]):
+                            val = pivot.values[yi, xi]
+                            if not np.isnan(val):
+                                ax.text(xi, yi, f'{val:.2f}', ha='center', va='center',
+                                        fontsize=6, color='white' if val < vmax * 0.7 else 'black')
+                    ax.set_title(label, fontsize=8)
+                    ax.set_xticks(range(len(ALPHA_VALUES)))
+                    ax.set_xticklabels([str(a) for a in ALPHA_VALUES], fontsize=7)
+                    ax.set_yticks(range(len(teacher_vals)))
+                    ax.set_yticklabels([_teacher_label(mode, v) for v in teacher_vals], fontsize=7)
+
+                # Difference heatmap
+                ax_diff = axes[bi, 2]
+                sub_e = he[he['sample_budget'] == budgets_e[bi]]
+                sub_s = hs[hs['sample_budget'] == budgets_s[bi]]
+                pivot_e = sub_e.pivot_table(values='final_mean_reward', index=tcol,
+                                            columns='alpha', aggfunc='mean')
+                pivot_s = sub_s.pivot_table(values='final_mean_reward', index=tcol,
+                                            columns='alpha', aggfunc='mean')
+                pivot_e = pivot_e.reindex(index=teacher_vals, columns=ALPHA_VALUES)
+                pivot_s = pivot_s.reindex(index=teacher_vals, columns=ALPHA_VALUES)
+                diff = pivot_s.values - pivot_e.values
+                vabs = max(0.01, np.nanmax(np.abs(diff)))
+
+                ax_diff.imshow(diff, aspect='auto', cmap='RdBu_r', vmin=-vabs, vmax=vabs)
+                for yi in range(diff.shape[0]):
+                    for xi in range(diff.shape[1]):
+                        val = diff[yi, xi]
+                        if not np.isnan(val):
+                            ax_diff.text(xi, yi, f'{val:+.2f}', ha='center', va='center',
+                                         fontsize=6)
+                ax_diff.set_title(f'Diff (Sample - Exact)', fontsize=8)
+                ax_diff.set_xticks(range(len(ALPHA_VALUES)))
+                ax_diff.set_xticklabels([str(a) for a in ALPHA_VALUES], fontsize=7)
+                ax_diff.set_yticks(range(len(teacher_vals)))
+                ax_diff.set_yticklabels([_teacher_label(mode, v) for v in teacher_vals], fontsize=7)
+
+            fig.suptitle(f'Exact vs Sample: dist={dist}, {h_type} horizon',
+                         fontsize=11, fontweight='bold')
+            plt.tight_layout(rect=[0, 0, 1, 0.95])
+            save_path = os.path.join(figures_dir, f'comparison_dist{dist}_{h_type}.png')
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            print(f"Saved {save_path}")
+
+
 # =========================================================================
 # Main
 # =========================================================================
@@ -837,7 +1045,7 @@ def _plot_sweep_diagnostics(all_results: list, mode: str, figures_dir: str):
 def main():
     parser = argparse.ArgumentParser(
         description='Comprehensive hypothesis sweep (zeta or capability)')
-    parser.add_argument('--mode', choices=['zeta', 'capability'], required=True,
+    parser.add_argument('--mode', choices=['zeta', 'capability', 'cap_zeta'], required=True,
                         help='Teacher parameterization to sweep')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Output directory (default: results/{mode}_sweep/<timestamp>)')
@@ -849,6 +1057,9 @@ def main():
                         help='Skip experiments, only generate plots from existing CSV')
     parser.add_argument('--all-plots', action='store_true',
                         help='Also generate heatmaps and distance_effect plots (off by default)')
+    parser.add_argument('--exact-gradient', type=str, default='true',
+                        choices=['true', 'false'],
+                        help='Use exact NPG (true, default) or sample-based (false)')
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -875,7 +1086,9 @@ def main():
             all_results = None
             print(f"No pickle cache found at {pkl_path} — visitation grids will be skipped")
     else:
-        all_results = run_sweep(args.mode, args.output_dir, args.n_seeds, args.n_workers)
+        exact_gradient = args.exact_gradient == 'true'
+        all_results = run_sweep(args.mode, args.output_dir, args.n_seeds,
+                                args.n_workers, exact_gradient=exact_gradient)
 
     # Load CSV for plotting
     df = pd.read_csv(csv_path)
