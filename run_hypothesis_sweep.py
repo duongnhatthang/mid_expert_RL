@@ -644,15 +644,34 @@ def plot_reward_vs_teacher_cap_zeta(df: pd.DataFrame, figures_dir: str):
                                     rf'$\pm${sem:.2f}',
                                     ha='center', va='center',
                                     fontsize=5, color=text_color)
-                        # Highlight cells whose mean matches/beats vanilla NPG.
-                        # Skip the α=0 column itself (trivially equal) and the
-                        # cells where vanilla baseline is undefined.
-                        if (alpha != 0.0 and not np.isnan(vanilla_mean)
-                                and val >= vanilla_mean - 1e-9):
-                            ax.add_patch(plt.Rectangle(
-                                (xi - 0.5, yi - 0.5), 1, 1,
-                                fill=False, edgecolor='red',
-                                linewidth=1.6, zorder=5))
+                        # Highlight cells relative to the vanilla NPG baseline.
+                        # Skip the α=0 column (trivially equal) and undefined
+                        # baselines. Use SEM-aware tolerance: a cell counts as
+                        # "equal" if it's within ±SEM of the baseline, "better"
+                        # if it strictly exceeds baseline + SEM. Colours are
+                        # chosen for high contrast with the viridis colormap
+                        # (which spans dark-purple → blue → green → yellow), so
+                        # we avoid yellow/green and pick deep magenta + white.
+                        if alpha != 0.0 and not np.isnan(vanilla_mean):
+                            tol = sem if not np.isnan(sem) else 1e-9
+                            if val > vanilla_mean + tol:
+                                edge = '#ff0000'  # pure red: strictly better
+                                lw = 2.0
+                            elif val >= vanilla_mean - tol:
+                                edge = '#ff7eb6'  # warm pink: equal within SEM
+                                lw = 1.6
+                            else:
+                                edge = None
+                            if edge is not None:
+                                # Inset rectangle slightly so neighbouring
+                                # outlined cells don't visually merge their
+                                # borders.
+                                inset = 0.08
+                                ax.add_patch(plt.Rectangle(
+                                    (xi - 0.5 + inset, yi - 0.5 + inset),
+                                    1 - 2 * inset, 1 - 2 * inset,
+                                    fill=False, edgecolor=edge,
+                                    linewidth=lw, zorder=5))
 
                 ax.set_xticks(range(len(zetas)))
                 ax.set_yticks(range(len(caps)))
@@ -685,8 +704,11 @@ def plot_reward_vs_teacher_cap_zeta(df: pd.DataFrame, figures_dir: str):
             r'$(c,\;\zeta)$.'
             '\n'
             r'Row $c=0$ is uniform-random teacher ($\zeta$ is a no-op), '
-            r'replicated across $\zeta$ for display. '
-            r'Red outline: cell $\geq$ vanilla NPG ($\alpha=0$) baseline for the same (budget, horizon).',
+            r'replicated across $\zeta$ for display.'
+            '\n'
+            r'Outlines (vs. vanilla NPG baseline at $\alpha=0$, same (budget, horizon)): '
+            r'RED = strictly better (mean $>$ baseline$+$SEM),  '
+            r'PINK = equal within SEM.',
             fontsize=11, fontweight='bold')
         plt.tight_layout(rect=[0, 0, 0.90, 0.92])
         save_path = os.path.join(figures_dir, f'cap_zeta_reward_dist{dist}.png')
