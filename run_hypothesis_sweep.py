@@ -972,13 +972,14 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                 n_cols = n_zeta + 1  # +1 advantage
                 n_rows = n_budget * n_cap
 
-                cell_size = 1.1
-                fig_w = cell_size * n_cols + 2.2
-                fig_h = cell_size * n_rows + 1.4
+                cell_size = 1.4
+                fig_w = cell_size * n_cols + 4.0
+                fig_h = cell_size * n_rows + 1.6
                 fig, axes = plt.subplots(n_rows, n_cols,
                                           figsize=(fig_w, fig_h),
                                           squeeze=False)
 
+                vis_mappables = {}  # budget -> im
                 adv_mappable = None
 
                 for bi, budget in enumerate(budget_vals):
@@ -989,20 +990,20 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                             ax = axes[global_row, zi]
                             grid = vis_grids.get((budget, c, z))
                             if grid is not None:
-                                ax.imshow(grid, cmap='hot', origin='upper',
-                                          vmin=0, vmax=vmax_vis)
-                                _annotate_grid(ax, env, goals)
+                                im = ax.imshow(grid, cmap='hot', origin='upper',
+                                               vmin=0, vmax=vmax_vis)
+                                vis_mappables[budget] = im
+                                _annotate_grid(ax, env, goals, compact=True)
                             else:
                                 ax.axis('off')
                             ax.set_xticks([])
                             ax.set_yticks([])
                             if zi == 0:
-                                label = f'cap={c}'
-                                if ci == 0:
-                                    label = f'budget={budget}\n{label}'
-                                ax.set_ylabel(label, fontsize=6)
+                                ax.set_ylabel(f'cap={c}', fontsize=9,
+                                              rotation=0, ha='right', va='center',
+                                              labelpad=8)
                             if global_row == 0:
-                                ax.set_title(f'ζ={z}', fontsize=7)
+                                ax.set_title(f'ζ={z}', fontsize=8)
 
                         # Advantage column (use ζ=1.0 to show the sharp signal)
                         ax_adv = axes[global_row, n_zeta]
@@ -1011,30 +1012,58 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                             im_adv = ax_adv.imshow(adv_grid, cmap='hot', origin='upper',
                                                    vmin=0, vmax=vmax_adv)
                             adv_mappable = im_adv
-                            _annotate_grid(ax_adv, env, goals)
+                            _annotate_grid(ax_adv, env, goals, compact=True)
                         else:
                             ax_adv.text(0.5, 0.5, 'N/A', ha='center', va='center',
-                                        transform=ax_adv.transAxes, fontsize=7, color='gray')
+                                        transform=ax_adv.transAxes, fontsize=8, color='gray')
                             ax_adv.set_xlim(0, 1)
                             ax_adv.set_ylim(0, 1)
                         ax_adv.set_xticks([])
                         ax_adv.set_yticks([])
                         if global_row == 0:
-                            ax_adv.set_title('A^μ(ζ=1.0)', fontsize=6)
+                            ax_adv.set_title('A^μ(ζ=1.0)', fontsize=7)
 
                 fig.subplots_adjust(
-                    left=0.10, right=0.88, bottom=0.03, top=0.93,
-                    wspace=0.10, hspace=0.18)
+                    left=0.12, right=0.83, bottom=0.04, top=0.93,
+                    wspace=0.10, hspace=0.25)
+
+                # Budget band labels on the far left
+                for bi, budget in enumerate(budget_vals):
+                    first = axes[bi * n_cap, 0]
+                    last = axes[bi * n_cap + n_cap - 1, 0]
+                    bbox_first = first.get_position()
+                    bbox_last = last.get_position()
+                    y_center = (bbox_first.y1 + bbox_last.y0) / 2.0
+                    fig.text(0.02, y_center, f'budget\n={budget}',
+                             ha='center', va='center',
+                             fontsize=9, fontweight='bold')
+
+                # Per-budget visit colorbars
+                cb_height = 0.75 / max(n_budget, 1) * 0.85
+                cb_gap = 0.75 / max(n_budget, 1) * 0.15
+                cb_start_y = 0.12
+                for bi, budget in enumerate(budget_vals):
+                    im = vis_mappables.get(budget)
+                    if im is None:
+                        continue
+                    y0 = cb_start_y + (n_budget - 1 - bi) * (cb_height + cb_gap)
+                    cax = fig.add_axes([0.86, y0, 0.012, cb_height])
+                    cb = fig.colorbar(im, cax=cax)
+                    cb.set_label(f'Visits (budget={budget})', fontsize=7)
+                    cb.ax.tick_params(labelsize=6)
+
                 if adv_mappable is not None:
-                    cax_adv = fig.add_axes([0.92, 0.25, 0.015, 0.5])
-                    fig.colorbar(adv_mappable, cax=cax_adv, label='Advantage')
+                    cax_adv = fig.add_axes([0.93, 0.15, 0.015, 0.7])
+                    cb_adv = fig.colorbar(adv_mappable, cax=cax_adv)
+                    cb_adv.set_label('Advantage', fontsize=8)
+                    cb_adv.ax.tick_params(labelsize=7)
 
                 alpha_label = 'Vanilla NPG' if alpha == 0.0 else f'α={alpha}'
                 fig.suptitle(
                     f'Cap × ζ visitation — dist={dist}, H={horizon_val} ({h_type}), '
                     f'{alpha_label}\nRows grouped by budget. '
                     f'Each budget uses its own visit scale.',
-                    fontsize=10, fontweight='bold')
+                    fontsize=11, fontweight='bold')
 
                 save_path = os.path.join(
                     figures_dir,
@@ -1109,9 +1138,9 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
             n_cols = n_alpha + 1  # +1 for advantage column
             n_rows = n_budget * n_tv
 
-            cell_size = 1.1
-            fig_w = cell_size * n_cols + 2.5
-            fig_h = cell_size * n_rows + 1.4
+            cell_size = 1.4
+            fig_w = cell_size * n_cols + 4.0  # extra room for labels + colorbars
+            fig_h = cell_size * n_rows + 1.6
             fig, axes = plt.subplots(n_rows, n_cols,
                                       figsize=(fig_w, fig_h),
                                       squeeze=False)
@@ -1138,7 +1167,7 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
             if vmax_adv == 0:
                 vmax_adv = 1
 
-            vis_mappables = {}  # one per budget (for per-budget colorbars)
+            vis_mappables = {}  # budget -> matplotlib image (for per-budget colorbars)
             adv_mappable = None
 
             for bi, budget in enumerate(budget_vals):
@@ -1152,18 +1181,17 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                             im = ax.imshow(grid, cmap='hot', origin='upper',
                                            vmin=0, vmax=vmax_vis)
                             vis_mappables[budget] = im
-                            _annotate_grid(ax, env, goals)
+                            _annotate_grid(ax, env, goals, compact=True)
                         else:
                             ax.axis('off')
                         ax.set_xticks([])
                         ax.set_yticks([])
                         if ci == 0:
-                            label = row_label_fn(rk)
-                            if ri == 0:
-                                label = f'budget={budget}\n{label}'
-                            ax.set_ylabel(label, fontsize=6)
+                            ax.set_ylabel(row_label_fn(rk), fontsize=9,
+                                          rotation=0, ha='right', va='center',
+                                          labelpad=8)
                         if global_row == 0:
-                            ax.set_title(col_label_fn(ck), fontsize=7)
+                            ax.set_title(col_label_fn(ck), fontsize=8)
 
                     # Advantage column (rightmost)
                     ax_adv = axes[global_row, n_alpha]
@@ -1172,31 +1200,59 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                         im_adv = ax_adv.imshow(adv_grid, cmap='hot', origin='upper',
                                                vmin=0, vmax=vmax_adv)
                         adv_mappable = im_adv
-                        _annotate_grid(ax_adv, env, goals)
+                        _annotate_grid(ax_adv, env, goals, compact=True)
                     else:
                         ax_adv.text(0.5, 0.5, 'N/A', ha='center', va='center',
-                                    transform=ax_adv.transAxes, fontsize=7, color='gray')
+                                    transform=ax_adv.transAxes, fontsize=8, color='gray')
                         ax_adv.set_xlim(0, 1)
                         ax_adv.set_ylim(0, 1)
                     ax_adv.set_xticks([])
                     ax_adv.set_yticks([])
                     if global_row == 0:
-                        ax_adv.set_title('A^μ(s) = max_a A^μ(s,a)', fontsize=6)
+                        ax_adv.set_title('A^μ(s) = max_a A^μ(s,a)', fontsize=7)
 
-            # Layout and colorbars
+            # Layout: leave room on left for row labels, on right for per-budget
+            # visit colorbars + one shared advantage colorbar.
             fig.subplots_adjust(
-                left=0.10, right=0.88, bottom=0.03, top=0.93,
-                wspace=0.10, hspace=0.18)
+                left=0.12, right=0.83, bottom=0.04, top=0.93,
+                wspace=0.10, hspace=0.25)
+
+            # Add per-budget "budget=X" band labels down the left margin
+            for bi, budget in enumerate(budget_vals):
+                # Find the vertical center of this budget's rows in figure coords
+                first = axes[bi * n_tv, 0]
+                last = axes[bi * n_tv + n_tv - 1, 0]
+                bbox_first = first.get_position()
+                bbox_last = last.get_position()
+                y_center = (bbox_first.y1 + bbox_last.y0) / 2.0
+                fig.text(0.02, y_center, f'budget\n={budget}',
+                         ha='center', va='center', fontsize=9, fontweight='bold')
+
+            # Per-budget visit colorbars down the right margin
+            cb_height = 0.75 / max(n_budget, 1) * 0.85
+            cb_gap = 0.75 / max(n_budget, 1) * 0.15
+            cb_start_y = 0.12
+            for bi, budget in enumerate(budget_vals):
+                im = vis_mappables.get(budget)
+                if im is None:
+                    continue
+                y0 = cb_start_y + (n_budget - 1 - bi) * (cb_height + cb_gap)
+                cax = fig.add_axes([0.86, y0, 0.012, cb_height])
+                cb = fig.colorbar(im, cax=cax)
+                cb.set_label(f'Visits (budget={budget})', fontsize=7)
+                cb.ax.tick_params(labelsize=6)
 
             if adv_mappable is not None:
-                cax_adv = fig.add_axes([0.92, 0.25, 0.015, 0.5])
-                fig.colorbar(adv_mappable, cax=cax_adv, label='Advantage')
+                cax_adv = fig.add_axes([0.93, 0.15, 0.015, 0.7])
+                cb_adv = fig.colorbar(adv_mappable, cax=cax_adv)
+                cb_adv.set_label('Advantage', fontsize=8)
+                cb_adv.ax.tick_params(labelsize=7)
 
             fig.suptitle(
                 f'Visitation + Teacher Advantage — dist={dist}, H={horizon_val} ({h_type})\n'
                 f'Rows grouped by budget ({budget_vals}). '
-                f'Each budget band uses its own visit scale (not shared across budgets).',
-                fontsize=10, fontweight='bold')
+                f'Each budget band uses its own visit scale.',
+                fontsize=11, fontweight='bold')
 
             save_path = os.path.join(
                 figures_dir,
@@ -1206,21 +1262,37 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
             print(f"Saved {save_path}")
 
 
-def _annotate_grid(ax, env, goals):
-    """Add start and goal markers to a grid subplot."""
+def _annotate_grid(ax, env, goals, compact: bool = False):
+    """Add start and goal markers to a grid subplot.
+
+    Uses patches only (no text overlays) — text inside small cells renders
+    unreliably and often clips outside the imshow area. Start is a cyan dot,
+    goals are green outline squares.
+
+    Args:
+        compact: If True, use smaller marker sizes suitable for dense grids.
+    """
     import matplotlib.patches as patches
     start = env.start
+    # Clip annotations strictly to the imshow extent so markers never stray
+    # outside the cell (fixes "random" G/S glyphs that appeared in empty axes).
+    ax.set_xlim(-0.5, env.grid_size - 0.5)
+    ax.set_ylim(env.grid_size - 0.5, -0.5)  # matches origin='upper'
+
+    start_r = 0.18 if compact else 0.25
+    goal_lw = 1.0 if compact else 1.5
+    goal_half = 0.30 if compact else 0.35
+
     ax.add_patch(patches.Circle(
-        (start[1], start[0]), 0.25, fill=True, color='cyan', alpha=0.8, linewidth=0))
-    ax.text(start[1], start[0], 'S', ha='center', va='center',
-            color='black', fontweight='bold', fontsize=6)
+        (start[1], start[0]), start_r,
+        fill=True, facecolor='cyan', edgecolor='black',
+        linewidth=0.4, alpha=0.9, zorder=5))
     if goals:
         for goal in goals:
             ax.add_patch(patches.Rectangle(
-                (goal[1] - 0.35, goal[0] - 0.35), 0.7, 0.7,
-                fill=False, edgecolor='lime', linewidth=1.5))
-            ax.text(goal[1], goal[0], 'G', ha='center', va='center',
-                    color='lime', fontweight='bold', fontsize=6)
+                (goal[1] - goal_half, goal[0] - goal_half),
+                2 * goal_half, 2 * goal_half,
+                fill=False, edgecolor='lime', linewidth=goal_lw, zorder=5))
 
 
 DELTA_V_SUBTITLE = (
