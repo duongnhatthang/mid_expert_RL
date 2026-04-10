@@ -412,12 +412,39 @@ def _teacher_col(mode: str) -> str:
 
 def _teacher_label(mode: str, val) -> str:
     if mode == 'zeta':
-        return f'\u03b6={val:.2f}'
+        return f'\u03b6={float(val):.2f}'
     if mode == 'cap_zeta':
         if isinstance(val, str):
             return val.replace('cap=', 'c').replace('_z=', '/\u03b6=')
         return str(val)
-    return {-1: 'no teacher', 0: 'uniform'}.get(val, f'cap={val}')
+    return {-1: 'no teacher', 0: 'uniform'}.get(int(val), f'cap={int(val)}')
+
+
+def _sort_teacher_vals(teacher_series, mode: str):
+    """Sort unique teacher values from a DataFrame column.
+
+    Returns list of sorted values. For cap_zeta, strings are parsed as (cap, zeta)
+    tuples for ordering but returned as the original string form.
+    """
+    vals = list(teacher_series.unique())
+    if mode == 'cap_zeta':
+        def _key(s):
+            # 'cap=C_z=Z' -> (C, Z)
+            parts = str(s).replace('cap=', '').replace('z=', '').split('_')
+            return (int(parts[0]), float(parts[1]))
+        return sorted(vals, key=_key)
+    return sorted(vals, key=float)
+
+
+def _teacher_x_positions(teacher_vals, mode: str):
+    """Return numeric x-axis positions for teacher values.
+
+    For cap_zeta, uses indices (0, 1, 2, ...). For zeta/capability, uses the
+    float values themselves.
+    """
+    if mode == 'cap_zeta':
+        return list(range(len(teacher_vals)))
+    return [float(v) for v in teacher_vals]
 
 
 def _mode_subtitle(mode: str) -> str:
@@ -453,7 +480,7 @@ def plot_heatmaps(df: pd.DataFrame, mode: str, figures_dir: str):
 
     tcol = _teacher_col(mode)
     goal_pos = _goal_positions(mode)
-    teacher_vals = sorted(df[tcol].unique(), key=float)
+    teacher_vals = _sort_teacher_vals(df[tcol], mode)
 
     for dist in DISTANCES:
         dist_df = df[df['distance'] == dist]
@@ -520,7 +547,8 @@ def plot_reward_vs_teacher(df: pd.DataFrame, mode: str, figures_dir: str):
 
     tcol = _teacher_col(mode)
     goal_pos = _goal_positions(mode)
-    teacher_vals = sorted(df[tcol].unique(), key=float)
+    teacher_vals = _sort_teacher_vals(df[tcol], mode)
+    x_positions = _teacher_x_positions(teacher_vals, mode)
     colors = cm.viridis(np.linspace(0.15, 0.85, len(ALPHA_VALUES)))
 
     for dist in DISTANCES:
@@ -552,9 +580,9 @@ def plot_reward_vs_teacher(df: pd.DataFrame, mode: str, figures_dir: str):
                     means_arr = np.array(means)
                     sems_arr = np.array(sems)
                     c = colors[ai]
-                    ax.plot(teacher_vals, means_arr, marker='o', markersize=3,
+                    ax.plot(x_positions, means_arr, marker='o', markersize=3,
                             label=f'\u03b1={alpha}', color=c, linewidth=1.5)
-                    ax.fill_between(teacher_vals, means_arr - sems_arr,
+                    ax.fill_between(x_positions, means_arr - sems_arr,
                                     means_arr + sems_arr, alpha=0.15, color=c)
 
                 ax.set_title(f'{mlabel}\n{_bh_title(budget, h_type, horizon)}',
@@ -562,9 +590,15 @@ def plot_reward_vs_teacher(df: pd.DataFrame, mode: str, figures_dir: str):
                 ax.set_ylabel(mlabel, fontsize=7)
                 ax.grid(True, alpha=0.3)
 
-                # Integer x-ticks for capability mode on ALL subplots
+                # Mode-specific x-axis
                 if mode == 'zeta':
                     ax.set_xlabel('\u03b6 (teacher expertise)', fontsize=7)
+                elif mode == 'cap_zeta':
+                    ax.set_xlabel('(capacity, \u03b6)', fontsize=7)
+                    ax.set_xticks(x_positions)
+                    ax.set_xticklabels(
+                        [_teacher_label(mode, v) for v in teacher_vals],
+                        fontsize=5, rotation=45, ha='right')
                 else:
                     ax.set_xlabel('Teacher Capacity', fontsize=7)
                     ax.set_xticks([int(v) for v in teacher_vals])
@@ -590,7 +624,7 @@ def plot_distance_effect(df: pd.DataFrame, mode: str, figures_dir: str):
     from matplotlib import cm
 
     tcol = _teacher_col(mode)
-    teacher_vals = sorted(df[tcol].unique(), key=float)
+    teacher_vals = _sort_teacher_vals(df[tcol], mode)
     colors = cm.tab10(np.linspace(0, 1, max(10, len(teacher_vals))))[:len(teacher_vals)]
 
     budget_rank_labels = ['T_sat/5', 'T_sat/3', 'T_sat', '2\u00d7T_sat']
@@ -676,6 +710,12 @@ def plot_distance_effect(df: pd.DataFrame, mode: str, figures_dir: str):
         print(f"Saved {save_path}")
 
 
+def _parse_cap_zeta(tv_str: str):
+    """Parse 'cap=C_z=Z' string -> (int, float)."""
+    parts = str(tv_str).replace('cap=', '').replace('z=', '').split('_')
+    return int(parts[0]), float(parts[1])
+
+
 def _compute_teacher_advantages(mode, teacher_vals, env, goals, gamma):
     """Compute teacher advantage A^mu(s,a) for each teacher value.
     Returns dict: teacher_val -> (n_states, n_actions) array, or None if no teacher."""
@@ -685,17 +725,29 @@ def _compute_teacher_advantages(mode, teacher_vals, env, goals, gamma):
     for tv in teacher_vals:
         if mode == 'zeta':
             Q_mu, V_mu, _ = compute_teacher_values_auto(
-                env, env.goals, zeta=tv, gamma=gamma)
+                env, env.goals, zeta=float(tv), gamma=gamma)
+            advantages[tv] = Q_mu - V_mu[:, None]
+        elif mode == 'cap_zeta':
+            cap, zeta = _parse_cap_zeta(tv)
+            if cap == 0:
+                # cap=0 is uniform regardless of zeta
+                Q_mu, V_mu, _ = compute_teacher_values_auto(
+                    env, env.goals, zeta=0.0, gamma=gamma)
+            else:
+                known_goals = goals[:cap]
+                Q_mu, V_mu, _ = compute_teacher_values_auto(
+                    env, known_goals, zeta=zeta, gamma=gamma)
             advantages[tv] = Q_mu - V_mu[:, None]
         else:
-            if tv == -1:
+            tv_int = int(tv)
+            if tv_int == -1:
                 advantages[tv] = None
-            elif tv == 0:
+            elif tv_int == 0:
                 Q_mu, V_mu, _ = compute_teacher_values_auto(
                     env, env.goals, zeta=0.0, gamma=gamma)
                 advantages[tv] = Q_mu - V_mu[:, None]
             else:
-                known_goals = goals[:tv]
+                known_goals = goals[:tv_int]
                 Q_mu, V_mu, _ = compute_teacher_values_auto(
                     env, known_goals, zeta=1.0, gamma=gamma)
                 advantages[tv] = Q_mu - V_mu[:, None]
@@ -709,7 +761,7 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
 
-    tcol = 'zeta' if mode == 'zeta' else 'teacher_capacity'
+    tcol = _teacher_col(mode)
     budget_vals = sorted(set(r['sample_budget'] for r in all_results))
 
     goal_pos = _goal_positions(mode)
@@ -736,6 +788,12 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 if mode == 'zeta':
                     row_keys = sorted(set(k[0] for k in visitation_data))
                     row_label_fn = lambda k: f'\u03b6={k:.2f}'
+                elif mode == 'cap_zeta':
+                    row_keys = sorted(
+                        set(k[0] for k in visitation_data),
+                        key=_parse_cap_zeta,
+                    )
+                    row_label_fn = lambda k: _teacher_label(mode, k)
                 else:
                     row_keys = sorted(set(k[0] for k in visitation_data))
                     cap_labels = {-1: 'no teacher', 0: 'uniform'}
@@ -955,7 +1013,7 @@ def plot_exact_vs_sample_comparison(
     df_sample = pd.read_csv(sample_csv)
 
     tcol = _teacher_col(mode)
-    teacher_vals = sorted(df_exact[tcol].unique(), key=float)
+    teacher_vals = _sort_teacher_vals(df_exact[tcol], mode)
     os.makedirs(figures_dir, exist_ok=True)
 
     for dist in DISTANCES:
