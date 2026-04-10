@@ -117,6 +117,26 @@ def test_run_experiment_collects_diagnostics():
     assert 'policy_entropy_start' in d
 
 
+def test_run_experiment_cap_zeta():
+    """Combined capacity + zeta mode should work."""
+    result = run_experiment(
+        grid_size=4,
+        goals=[(3, 3), (0, 3)],
+        teacher_capacity=1,
+        zeta=0.5,
+        horizon=16,
+        sample_budget=10,
+        alpha=0.5,
+        lr=0.1,
+        seed=0,
+        eval_interval=5,
+        exact_gradient=True,
+    )
+    assert 'final_mean_reward' in result
+    assert result['diagnostics'] is not None
+    assert len(result['diagnostics']) == 10
+
+
 def test_run_experiment_diagnostics_alpha_zero():
     """At alpha=0, A^mu contributions should be zero in diagnostics."""
     result = run_experiment(
