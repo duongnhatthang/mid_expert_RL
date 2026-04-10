@@ -585,37 +585,75 @@ def plot_reward_vs_teacher_cap_zeta(df: pd.DataFrame, figures_dir: str):
 
         vmax = max(0.01, dist_df[metric].max())
 
+        def _cell_stats(cell_vals):
+            """Return (mean, sem) from a Series of per-seed rewards."""
+            n = len(cell_vals)
+            if n == 0:
+                return np.nan, np.nan
+            mean = float(cell_vals.mean())
+            sem = float(cell_vals.std(ddof=1) / np.sqrt(n)) if n > 1 else 0.0
+            return mean, sem
+
         for ri, (budget, h_type, horizon) in enumerate(bh_pairs):
             sub = dist_df[(dist_df['sample_budget'] == budget) &
                           (dist_df['horizon_type'] == h_type)]
+
+            # Vanilla NPG baseline (α=0) for this (budget, horizon). Teacher is
+            # irrelevant at α=0, so we average all seeds across all teacher cells.
+            vanilla_rows = sub[sub['alpha'] == 0.0][metric]
+            vanilla_mean = float(vanilla_rows.mean()) if len(vanilla_rows) else np.nan
+
             for ci, alpha in enumerate(ALPHA_VALUES):
                 ax = axes[ri, ci]
                 asub = sub[sub['alpha'] == alpha]
-                # Build (cap x zeta) grid
-                grid = np.full((len(caps), len(zetas)), np.nan)
+                # Build (cap x zeta) grid of (mean, sem) cells
+                grid_mean = np.full((len(caps), len(zetas)), np.nan)
+                grid_sem = np.full((len(caps), len(zetas)), np.nan)
                 for i, cap in enumerate(caps):
                     cap_rows = asub[asub['_cap'] == cap]
                     if cap == 0:
-                        # cap=0 is uniform regardless of zeta: collect anything and
-                        # replicate across the zeta axis so the surface is filled.
-                        if len(cap_rows) > 0:
-                            val = cap_rows[metric].mean()
-                            grid[i, :] = val
+                        # cap=0 is uniform regardless of zeta: collect all seeds
+                        # and replicate across the zeta axis.
+                        mean, sem = _cell_stats(cap_rows[metric])
+                        grid_mean[i, :] = mean
+                        grid_sem[i, :] = sem
                         continue
                     for j, z in enumerate(zetas):
-                        cell = cap_rows[np.isclose(cap_rows['_zeta'], z)][metric]
-                        if len(cell) > 0:
-                            grid[i, j] = cell.mean()
+                        cell_vals = cap_rows[np.isclose(cap_rows['_zeta'], z)][metric]
+                        mean, sem = _cell_stats(cell_vals)
+                        grid_mean[i, j] = mean
+                        grid_sem[i, j] = sem
 
-                im = ax.imshow(grid, aspect='auto', cmap='viridis',
+                im = ax.imshow(grid_mean, aspect='auto', cmap='viridis',
                                vmin=0, vmax=vmax, origin='lower')
-                for yi in range(grid.shape[0]):
-                    for xi in range(grid.shape[1]):
-                        val = grid[yi, xi]
-                        if not np.isnan(val):
-                            ax.text(xi, yi, f'{val:.2f}', ha='center', va='center',
-                                    fontsize=6,
-                                    color='white' if val < vmax * 0.6 else 'black')
+
+                # Annotate cells: mean on top, ±sem below, and highlight cells
+                # that match or beat the vanilla NPG baseline.
+                for yi in range(grid_mean.shape[0]):
+                    for xi in range(grid_mean.shape[1]):
+                        val = grid_mean[yi, xi]
+                        sem = grid_sem[yi, xi]
+                        if np.isnan(val):
+                            continue
+                        text_color = 'white' if val < vmax * 0.6 else 'black'
+                        ax.text(xi, yi - 0.15, f'{val:.2f}',
+                                ha='center', va='center',
+                                fontsize=6, color=text_color)
+                        if not np.isnan(sem):
+                            ax.text(xi, yi + 0.22,
+                                    rf'$\pm${sem:.2f}',
+                                    ha='center', va='center',
+                                    fontsize=5, color=text_color)
+                        # Highlight cells whose mean matches/beats vanilla NPG.
+                        # Skip the α=0 column itself (trivially equal) and the
+                        # cells where vanilla baseline is undefined.
+                        if (alpha != 0.0 and not np.isnan(vanilla_mean)
+                                and val >= vanilla_mean - 1e-9):
+                            ax.add_patch(plt.Rectangle(
+                                (xi - 0.5, yi - 0.5), 1, 1,
+                                fill=False, edgecolor='red',
+                                linewidth=1.6, zorder=5))
+
                 ax.set_xticks(range(len(zetas)))
                 ax.set_yticks(range(len(caps)))
                 if ri == n_rows - 1:
@@ -643,11 +681,12 @@ def plot_reward_vs_teacher_cap_zeta(df: pd.DataFrame, figures_dir: str):
             rf'Cap$\times\zeta$ — distance={dist}, goals={goals}'
             '\n'
             r'Rows: (budget, horizon). Columns: $\alpha$. '
-            r'Cells: mean reward (averaged over 10 seeds) as a function of '
+            r'Cells: mean reward $\pm$ SEM (10 seeds) as a function of '
             r'$(c,\;\zeta)$.'
             '\n'
             r'Row $c=0$ is uniform-random teacher ($\zeta$ is a no-op), '
-            r'replicated across $\zeta$ for display.',
+            r'replicated across $\zeta$ for display. '
+            r'Red outline: cell $\geq$ vanilla NPG ($\alpha=0$) baseline for the same (budget, horizon).',
             fontsize=11, fontweight='bold')
         plt.tight_layout(rect=[0, 0, 0.90, 0.92])
         save_path = os.path.join(figures_dir, f'cap_zeta_reward_dist{dist}.png')
