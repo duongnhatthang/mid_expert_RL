@@ -411,13 +411,22 @@ def _teacher_col(mode: str) -> str:
 
 
 def _teacher_label(mode: str, val) -> str:
+    """Render a matplotlib-friendly teacher label using LaTeX math where
+    applicable. Return values are intended to be consumed as `label=...` on
+    plot elements — strings may contain `$...$` math segments."""
     if mode == 'zeta':
-        return f'\u03b6={float(val):.2f}'
+        return rf'$\zeta={float(val):.2f}$'
     if mode == 'cap_zeta':
         if isinstance(val, str):
-            return val.replace('cap=', 'c').replace('_z=', '/\u03b6=')
+            cap, zeta = _parse_cap_zeta(val)
+            return rf'$c={cap},\;\zeta={zeta:.2f}$'
         return str(val)
-    return {-1: 'no teacher', 0: 'uniform'}.get(int(val), f'cap={int(val)}')
+    iv = int(val)
+    if iv == -1:
+        return 'no teacher'
+    if iv == 0:
+        return 'uniform'
+    return rf'$c={iv}$'
 
 
 def _sort_teacher_vals(teacher_series, mode: str):
@@ -610,32 +619,37 @@ def plot_reward_vs_teacher_cap_zeta(df: pd.DataFrame, figures_dir: str):
                 ax.set_xticks(range(len(zetas)))
                 ax.set_yticks(range(len(caps)))
                 if ri == n_rows - 1:
-                    ax.set_xticklabels([f'{z}' for z in zetas], fontsize=6)
-                    ax.set_xlabel('ζ', fontsize=7)
+                    ax.set_xticklabels([f'{z}' for z in zetas], fontsize=7)
+                    ax.set_xlabel(r'$\zeta$', fontsize=9)
                 else:
                     ax.set_xticklabels([])
                 if ci == 0:
-                    ax.set_yticklabels([f'{c}' for c in caps], fontsize=6)
-                    ax.set_ylabel(f'{_bh_title(budget, h_type, horizon)}\ncapacity',
-                                  fontsize=6)
+                    ax.set_yticklabels([f'{c}' for c in caps], fontsize=7)
+                    ax.set_ylabel(f'{_bh_title(budget, h_type, horizon)}\ncapacity $c$',
+                                  fontsize=7)
                 else:
                     ax.set_yticklabels([])
                 if ri == 0:
                     ax.set_title(
-                        'Vanilla NPG' if alpha == 0.0 else f'α={alpha}',
-                        fontsize=8)
+                        'Vanilla NPG' if alpha == 0.0 else rf'$\alpha={alpha}$',
+                        fontsize=9)
 
         fig.subplots_adjust(right=0.90)
         cax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-        fig.colorbar(im, cax=cax, label=mlabel)
+        fig.colorbar(im, cax=cax, label='Mean reward')
 
         goals = goal_pos[dist]
         fig.suptitle(
-            f'Cap × ζ — dist={dist}, goals={goals}\n'
-            f'Rows: (budget, horizon). Columns: α. Cells: mean_reward over 10 seeds.\n'
-            f'cap=0 row is uniform random (ζ is a no-op), replicated across ζ for display.',
-            fontsize=10, fontweight='bold')
-        plt.tight_layout(rect=[0, 0, 0.90, 0.93])
+            rf'Cap$\times\zeta$ — distance={dist}, goals={goals}'
+            '\n'
+            r'Rows: (budget, horizon). Columns: $\alpha$. '
+            r'Cells: mean reward (averaged over 10 seeds) as a function of '
+            r'$(c,\;\zeta)$.'
+            '\n'
+            r'Row $c=0$ is uniform-random teacher ($\zeta$ is a no-op), '
+            r'replicated across $\zeta$ for display.',
+            fontsize=11, fontweight='bold')
+        plt.tight_layout(rect=[0, 0, 0.90, 0.92])
         save_path = os.path.join(figures_dir, f'cap_zeta_reward_dist{dist}.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
@@ -998,12 +1012,8 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                                 ax.axis('off')
                             ax.set_xticks([])
                             ax.set_yticks([])
-                            if zi == 0:
-                                ax.set_ylabel(f'cap={c}', fontsize=9,
-                                              rotation=0, ha='right', va='center',
-                                              labelpad=8)
                             if global_row == 0:
-                                ax.set_title(f'ζ={z}', fontsize=8)
+                                ax.set_title(rf'$\zeta={z}$', fontsize=10)
 
                         # Advantage column (use ζ=1.0 to show the sharp signal)
                         ax_adv = axes[global_row, n_zeta]
@@ -1015,54 +1025,73 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                             _annotate_grid(ax_adv, env, goals, compact=True)
                         else:
                             ax_adv.text(0.5, 0.5, 'N/A', ha='center', va='center',
-                                        transform=ax_adv.transAxes, fontsize=8, color='gray')
+                                        transform=ax_adv.transAxes, fontsize=9, color='gray')
                             ax_adv.set_xlim(0, 1)
                             ax_adv.set_ylim(0, 1)
                         ax_adv.set_xticks([])
                         ax_adv.set_yticks([])
                         if global_row == 0:
-                            ax_adv.set_title('A^μ(ζ=1.0)', fontsize=7)
+                            ax_adv.set_title(r'$\max_a A^{\mu}|_{\zeta=1}$',
+                                             fontsize=9)
 
                 fig.subplots_adjust(
-                    left=0.12, right=0.83, bottom=0.04, top=0.93,
+                    left=0.14, right=0.86, bottom=0.04, top=0.93,
                     wspace=0.10, hspace=0.25)
 
-                # Budget band labels on the far left
+                # Row labels via fig.text (ylabel is unreliable at small cell sizes)
+                for bi, budget in enumerate(budget_vals):
+                    for ci, c in enumerate(caps):
+                        global_row = bi * n_cap + ci
+                        ax = axes[global_row, 0]
+                        bbox = ax.get_position()
+                        y_center = (bbox.y0 + bbox.y1) / 2.0
+                        fig.text(bbox.x0 - 0.005, y_center, rf'$c={c}$',
+                                 ha='right', va='center', fontsize=10)
+
+                # "Budget=X" band label on the far left, centered per band
                 for bi, budget in enumerate(budget_vals):
                     first = axes[bi * n_cap, 0]
                     last = axes[bi * n_cap + n_cap - 1, 0]
                     bbox_first = first.get_position()
                     bbox_last = last.get_position()
                     y_center = (bbox_first.y1 + bbox_last.y0) / 2.0
-                    fig.text(0.02, y_center, f'budget\n={budget}',
-                             ha='center', va='center',
-                             fontsize=9, fontweight='bold')
+                    fig.text(0.015, y_center, rf'$T={budget}$',
+                             ha='left', va='center',
+                             fontsize=11, fontweight='bold')
 
-                # Per-budget visit colorbars
-                cb_height = 0.75 / max(n_budget, 1) * 0.85
-                cb_gap = 0.75 / max(n_budget, 1) * 0.15
-                cb_start_y = 0.12
+                # Per-budget visit colorbars precisely aligned with each budget band
                 for bi, budget in enumerate(budget_vals):
                     im = vis_mappables.get(budget)
                     if im is None:
                         continue
-                    y0 = cb_start_y + (n_budget - 1 - bi) * (cb_height + cb_gap)
-                    cax = fig.add_axes([0.86, y0, 0.012, cb_height])
+                    first = axes[bi * n_cap, 0]
+                    last = axes[bi * n_cap + n_cap - 1, 0]
+                    bbox_first = first.get_position()
+                    bbox_last = last.get_position()
+                    y0 = bbox_last.y0
+                    height = bbox_first.y1 - bbox_last.y0
+                    cax = fig.add_axes([0.88, y0, 0.010, height])
                     cb = fig.colorbar(im, cax=cax)
-                    cb.set_label(f'Visits (budget={budget})', fontsize=7)
+                    cb.set_label('Visits', fontsize=8)
                     cb.ax.tick_params(labelsize=6)
 
                 if adv_mappable is not None:
-                    cax_adv = fig.add_axes([0.93, 0.15, 0.015, 0.7])
+                    top_bbox = axes[0, 0].get_position()
+                    bot_bbox = axes[-1, 0].get_position()
+                    y0 = bot_bbox.y0
+                    height = top_bbox.y1 - bot_bbox.y0
+                    cax_adv = fig.add_axes([0.94, y0, 0.012, height])
                     cb_adv = fig.colorbar(adv_mappable, cax=cax_adv)
-                    cb_adv.set_label('Advantage', fontsize=8)
+                    cb_adv.set_label('Advantage', fontsize=9)
                     cb_adv.ax.tick_params(labelsize=7)
 
-                alpha_label = 'Vanilla NPG' if alpha == 0.0 else f'α={alpha}'
+                alpha_label = 'Vanilla NPG' if alpha == 0.0 else rf'$\alpha={alpha}$'
                 fig.suptitle(
-                    f'Cap × ζ visitation — dist={dist}, H={horizon_val} ({h_type}), '
-                    f'{alpha_label}\nRows grouped by budget. '
-                    f'Each budget uses its own visit scale.',
+                    rf'Cap$\times\zeta$ visitation — distance={dist}, '
+                    rf'horizon={horizon_val} ({h_type}), {alpha_label}'
+                    '\n'
+                    r'Rows grouped by budget $T$. '
+                    r'Each budget band has its own visit colour scale.',
                     fontsize=11, fontweight='bold')
 
                 save_path = os.path.join(
@@ -1118,14 +1147,14 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
             budget_vals = sorted({k[0] for k in visitation_data})
             if mode == 'zeta':
                 row_keys = sorted({k[1] for k in visitation_data})
-                row_label_fn = lambda k: f'\u03b6={k:.2f}'
+                row_label_fn = lambda k: rf'$\zeta={float(k):.2f}$'
             else:
                 row_keys = sorted({k[1] for k in visitation_data})
                 cap_labels = {-1: 'no teacher', 0: 'uniform'}
-                row_label_fn = lambda k: cap_labels.get(k, f'cap={k}')
+                row_label_fn = lambda k: cap_labels.get(int(k), rf'$c={int(k)}$')
 
             col_keys = sorted({k[2] for k in visitation_data})
-            col_label_fn = lambda a: 'Vanilla NPG' if a == 0.0 else f'\u03b1={a}'
+            col_label_fn = lambda a: 'Vanilla NPG' if a == 0.0 else rf'$\alpha={a}$'
 
             horizon_val = horizons[h_type]
             gamma = compute_gamma_from_horizon(horizon_val)
@@ -1186,12 +1215,8 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                             ax.axis('off')
                         ax.set_xticks([])
                         ax.set_yticks([])
-                        if ci == 0:
-                            ax.set_ylabel(row_label_fn(rk), fontsize=9,
-                                          rotation=0, ha='right', va='center',
-                                          labelpad=8)
                         if global_row == 0:
-                            ax.set_title(col_label_fn(ck), fontsize=8)
+                            ax.set_title(col_label_fn(ck), fontsize=9)
 
                     # Advantage column (rightmost)
                     ax_adv = axes[global_row, n_alpha]
@@ -1203,55 +1228,75 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                         _annotate_grid(ax_adv, env, goals, compact=True)
                     else:
                         ax_adv.text(0.5, 0.5, 'N/A', ha='center', va='center',
-                                    transform=ax_adv.transAxes, fontsize=8, color='gray')
+                                    transform=ax_adv.transAxes, fontsize=9, color='gray')
                         ax_adv.set_xlim(0, 1)
                         ax_adv.set_ylim(0, 1)
                     ax_adv.set_xticks([])
                     ax_adv.set_yticks([])
                     if global_row == 0:
-                        ax_adv.set_title('A^μ(s) = max_a A^μ(s,a)', fontsize=7)
+                        ax_adv.set_title(r'$\max_a A^{\mu}(s,a)$', fontsize=9)
 
-            # Layout: leave room on left for row labels, on right for per-budget
-            # visit colorbars + one shared advantage colorbar.
+            # Layout: leave room on left for band label + row labels, on right for
+            # per-budget visit colorbars + one shared advantage colorbar.
             fig.subplots_adjust(
-                left=0.12, right=0.83, bottom=0.04, top=0.93,
+                left=0.14, right=0.86, bottom=0.04, top=0.93,
                 wspace=0.10, hspace=0.25)
 
-            # Add per-budget "budget=X" band labels down the left margin
+            # Use fig.text (not set_ylabel) for row labels so they render reliably
+            # in dense grids. Position each label just left of the first column.
             for bi, budget in enumerate(budget_vals):
-                # Find the vertical center of this budget's rows in figure coords
+                for ri, rk in enumerate(row_keys):
+                    global_row = bi * n_tv + ri
+                    ax = axes[global_row, 0]
+                    bbox = ax.get_position()
+                    y_center = (bbox.y0 + bbox.y1) / 2.0
+                    fig.text(bbox.x0 - 0.005, y_center, row_label_fn(rk),
+                             ha='right', va='center', fontsize=9)
+
+            # "Budget=X" band label further left, centered on each budget band
+            for bi, budget in enumerate(budget_vals):
                 first = axes[bi * n_tv, 0]
                 last = axes[bi * n_tv + n_tv - 1, 0]
                 bbox_first = first.get_position()
                 bbox_last = last.get_position()
                 y_center = (bbox_first.y1 + bbox_last.y0) / 2.0
-                fig.text(0.02, y_center, f'budget\n={budget}',
-                         ha='center', va='center', fontsize=9, fontweight='bold')
+                fig.text(0.015, y_center, rf'$T={budget}$',
+                         ha='left', va='center',
+                         fontsize=11, fontweight='bold')
 
-            # Per-budget visit colorbars down the right margin
-            cb_height = 0.75 / max(n_budget, 1) * 0.85
-            cb_gap = 0.75 / max(n_budget, 1) * 0.15
-            cb_start_y = 0.12
+            # Per-budget visit colorbars precisely aligned with each budget band
             for bi, budget in enumerate(budget_vals):
                 im = vis_mappables.get(budget)
                 if im is None:
                     continue
-                y0 = cb_start_y + (n_budget - 1 - bi) * (cb_height + cb_gap)
-                cax = fig.add_axes([0.86, y0, 0.012, cb_height])
+                first = axes[bi * n_tv, 0]
+                last = axes[bi * n_tv + n_tv - 1, 0]
+                bbox_first = first.get_position()
+                bbox_last = last.get_position()
+                y0 = bbox_last.y0
+                height = bbox_first.y1 - bbox_last.y0
+                cax = fig.add_axes([0.88, y0, 0.010, height])
                 cb = fig.colorbar(im, cax=cax)
-                cb.set_label(f'Visits (budget={budget})', fontsize=7)
+                cb.set_label('Visits', fontsize=8)
                 cb.ax.tick_params(labelsize=6)
 
             if adv_mappable is not None:
-                cax_adv = fig.add_axes([0.93, 0.15, 0.015, 0.7])
+                # Advantage colorbar spans full subplot grid height for consistent look
+                top_bbox = axes[0, 0].get_position()
+                bot_bbox = axes[-1, 0].get_position()
+                y0 = bot_bbox.y0
+                height = top_bbox.y1 - bot_bbox.y0
+                cax_adv = fig.add_axes([0.94, y0, 0.012, height])
                 cb_adv = fig.colorbar(adv_mappable, cax=cax_adv)
-                cb_adv.set_label('Advantage', fontsize=8)
+                cb_adv.set_label('Advantage', fontsize=9)
                 cb_adv.ax.tick_params(labelsize=7)
 
             fig.suptitle(
-                f'Visitation + Teacher Advantage — dist={dist}, H={horizon_val} ({h_type})\n'
-                f'Rows grouped by budget ({budget_vals}). '
-                f'Each budget band uses its own visit scale.',
+                rf'State visitation + teacher advantage — distance={dist}, '
+                rf'horizon={horizon_val} ({h_type})'
+                '\n'
+                rf'Rows grouped by budget $T\in\{{{",".join(str(b) for b in budget_vals)}\}}$. '
+                r'Each budget band has its own visit colour scale.',
                 fontsize=11, fontweight='bold')
 
             save_path = os.path.join(
@@ -1296,9 +1341,14 @@ def _annotate_grid(ax, env, goals, compact: bool = False):
 
 
 DELTA_V_SUBTITLE = (
-    'Δ_total = V^π(s₀) after update − V^π(s₀) before.    '
-    'Δ_Qπ = hypothetical Qπ-only update (α=0).    Δ_Aμ = Δ_total − Δ_Qπ.    '
-    '(Decomposition is approximate — softmax nonlinearity couples the two components.)'
+    r'Each line shows the TOTAL per-step change in student value at the start state: '
+    r'$\Delta V^{\pi}(s_0)\;=\;V^{\pi_{\mathrm{new}}}(s_0)\;-\;V^{\pi_{\mathrm{old}}}(s_0)$'
+    r' (one curve per teacher value).'
+    '\n'
+    r'The full update uses the convex combination '
+    r'$(1-\alpha)\,Q^{\pi}\;+\;\alpha\,A^{\mu}$, so '
+    r'$\Delta V^{\pi}(s_0) = \Delta_{Q^{\pi}} + \Delta_{A^{\mu}}$ (approximately, '
+    r'since softmax couples the two components).'
 )
 
 
@@ -1398,11 +1448,11 @@ def _plot_consolidated_diagnostics(
 
             ax.grid(True, alpha=0.3)
             if ri == 0:
-                ax.set_title(f'α={alpha}', fontsize=8)
+                ax.set_title(r'$\alpha=' + f'{alpha}$', fontsize=9)
             if ci == 0:
-                ax.set_ylabel(f'budget={budget}\n{ylabel}', fontsize=7)
+                ax.set_ylabel(rf'$T={budget}$' + '\n' + ylabel, fontsize=8)
             if ri == n_rows - 1:
-                ax.set_xlabel('Update step', fontsize=7)
+                ax.set_xlabel('NPG update step', fontsize=8)
 
     # Single legend for the whole figure
     handles_labels = {}
@@ -1459,15 +1509,19 @@ def _plot_sweep_diagnostics(all_results: list, mode: str, figures_dir: str):
 
     for (dist, h_type), sub_groups in by_dist_h.items():
         suffix = f'dist{dist}_{h_type}'
-        base_title = f'dist={dist}, horizon={h_type}'
+        base_title = f'distance={dist}, horizon={h_type}'
 
         _plot_consolidated_diagnostics(
             sub_groups, mode,
             metric_keys=[('q_pi_l2', '-'), ('a_mu_l2', '--')],
             plot_kind='magnitude',
-            title=(f'Signal Magnitude (L2) — {base_title}\n'
-                   f'Solid = ||(1-α)·Q^π||,   Dashed = ||α·A^μ||'),
-            ylabel='L2 norm',
+            title=(
+                r'Signal magnitude ($L_2$) — ' + base_title + '\n'
+                r'Solid: $\|(1-\alpha)\,Q^{\pi}\|_2$,'
+                r'   Dashed: $\|\alpha\,A^{\mu}\|_2$.'
+                r'  One colour per teacher value (see legend).'
+            ),
+            ylabel=r'$L_2$ norm',
             save_path=os.path.join(diag_dir, f'magnitude_{suffix}.png'),
         )
 
@@ -1475,9 +1529,11 @@ def _plot_sweep_diagnostics(all_results: list, mode: str, figures_dir: str):
             sub_groups, mode,
             metric_keys=[],
             plot_kind='delta_v',
-            title=(f'Per-step ΔV^π(s₀) — {base_title}\n'
-                   f'{DELTA_V_SUBTITLE}'),
-            ylabel='ΔV^π(s₀)',
+            title=(
+                r'Per-step $\Delta V^{\pi}(s_0)$ — ' + base_title + '\n'
+                + DELTA_V_SUBTITLE
+            ),
+            ylabel=r'$\Delta V^{\pi}(s_0)$',
             save_path=os.path.join(diag_dir, f'delta_v_{suffix}.png'),
         )
 
@@ -1485,8 +1541,12 @@ def _plot_sweep_diagnostics(all_results: list, mode: str, figures_dir: str):
             sub_groups, mode,
             metric_keys=[('policy_entropy_start', '-')],
             plot_kind='entropy',
-            title=f'Policy entropy at s₀ — {base_title}',
-            ylabel='Entropy (nats)',
+            title=(
+                r'Policy entropy at $s_0$ — ' + base_title + '\n'
+                r'$H(\pi(\cdot\mid s_0))$ over NPG update steps, '
+                r'one curve per teacher value.'
+            ),
+            ylabel=r'$H(\pi(\cdot\mid s_0))$  (nats)',
             save_path=os.path.join(diag_dir, f'entropy_{suffix}.png'),
         )
 
