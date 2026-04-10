@@ -82,3 +82,55 @@ def test_diagnostics_alpha_zero(setup):
     assert diag['a_mu_l2'] == 0.0
     assert diag['a_mu_max'] == 0.0
     assert diag['q_pi_l2'] > 0.0
+
+
+# =========================================================================
+# Integration tests: run_experiment diagnostics collection
+# =========================================================================
+
+from tabular_prototype.experiments import run_experiment
+
+
+def test_run_experiment_collects_diagnostics():
+    """run_experiment in exact mode should collect per-step diagnostics."""
+    result = run_experiment(
+        grid_size=4,
+        goals=[(3, 3)],
+        teacher_capacity=1,
+        horizon=16,
+        sample_budget=20,
+        alpha=0.5,
+        lr=0.1,
+        seed=0,
+        eval_interval=5,
+        exact_gradient=True,
+    )
+    assert 'diagnostics' in result
+    assert len(result['diagnostics']) == 20  # one per step
+
+    d = result['diagnostics'][0]
+    assert 'q_pi_l2' in d
+    assert 'a_mu_l2' in d
+    assert 'delta_v_total' in d
+    assert 'delta_v_qpi' in d
+    assert 'delta_v_amu' in d
+    assert 'policy_entropy_start' in d
+
+
+def test_run_experiment_diagnostics_alpha_zero():
+    """At alpha=0, A^mu contributions should be zero in diagnostics."""
+    result = run_experiment(
+        grid_size=4,
+        goals=[(3, 3)],
+        teacher_capacity=1,
+        horizon=16,
+        sample_budget=10,
+        alpha=0.0,
+        lr=0.1,
+        seed=0,
+        eval_interval=5,
+        exact_gradient=True,
+    )
+    for d in result['diagnostics']:
+        assert d['a_mu_l2'] == 0.0
+        assert d['delta_v_amu'] == pytest.approx(0.0, abs=1e-8)

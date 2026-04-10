@@ -17,6 +17,7 @@ from .training import (
     compute_student_qvalues,
     compute_state_action_visitation,
     visitation_metrics,
+    _safe_kurtosis,
 )
 from .visualization import visualize_state_visitation, visualize_visitation_comparison_grid
 
@@ -66,11 +67,43 @@ def run_experiment(
     cumulative_visitation = np.zeros((env.n_states, env.n_actions))
     gamma_undiscounted = 1.0 - 1e-8
 
+    all_diagnostics = []
+
     if exact_gradient:
         # Exact NPG mode: budget = number of update steps
+        start_idx = env.state_to_idx(env.start)
+
         for step in range(sample_budget):
             Q_pi, V_pi = compute_student_qvalues(env, policy, gamma)
-            exact_npg_update(policy, Q_pi, Q_mu, V_mu, alpha, lr)
+            V_before = float(V_pi[start_idx])
+
+            # Policy entropy at start state
+            probs_start = policy.get_probs(start_idx)
+            probs_start_safe = probs_start[probs_start > 0]
+            entropy_start = float(-np.sum(probs_start_safe * np.log(probs_start_safe)))
+
+            # Delta-V decomposition: hypothetical Q^pi-only update
+            theta_saved = policy.theta.copy()
+            exact_npg_update(policy, Q_pi, None, None, alpha=0.0, lr=lr)
+            Q_pi_after, V_pi_after = compute_student_qvalues(env, policy, gamma)
+            delta_v_qpi = float(V_pi_after[start_idx]) - V_before
+            policy.theta = theta_saved  # restore
+
+            # Real update
+            step_diag = exact_npg_update(policy, Q_pi, Q_mu, V_mu, alpha, lr)
+
+            # Measure actual delta-V
+            Q_pi_new, V_pi_new = compute_student_qvalues(env, policy, gamma)
+            delta_v_total = float(V_pi_new[start_idx]) - V_before
+            delta_v_amu = delta_v_total - delta_v_qpi
+
+            step_diag['delta_v_total'] = delta_v_total
+            step_diag['delta_v_qpi'] = delta_v_qpi
+            step_diag['delta_v_amu'] = delta_v_amu
+            step_diag['policy_entropy_start'] = entropy_start
+            step_diag['step'] = step
+            all_diagnostics.append(step_diag)
+
             update_count += 1
 
             is_last_step = (step == sample_budget - 1)
@@ -78,7 +111,6 @@ def run_experiment(
                 eval_results = evaluate_policy(
                     env, policy, n_episodes=eval_n_episodes, rng=rng
                 )
-                start_idx = env.state_to_idx(env.start)
                 _, V_pi_undiscounted = compute_student_qvalues(
                     env, policy, gamma_undiscounted
                 )
@@ -86,7 +118,7 @@ def run_experiment(
                     'steps': update_count,
                     'mean_reward': eval_results['mean_reward'],
                     'goal_rate': eval_results['goal_rate'],
-                    'exact_V_start': float(V_pi[start_idx]),
+                    'exact_V_start': float(V_pi_new[start_idx]),
                     'exact_V_start_undiscounted': float(
                         V_pi_undiscounted[start_idx]
                     ),
@@ -95,6 +127,8 @@ def run_experiment(
                 })
     else:
         # Sample-based mode: budget = number of observations
+        start_idx = env.state_to_idx(env.start)
+
         while total_steps < sample_budget:
             trajectories = collect_trajectories(
                 env, policy, trajectories_per_update, rng
@@ -116,19 +150,66 @@ def run_experiment(
             cumulative_visitation += step_vis
 
             Q_pi, V_pi = compute_student_qvalues(env, policy, gamma)
+            V_before = float(V_pi[start_idx])
+
+            # Policy entropy at start state
+            probs_start = policy.get_probs(start_idx)
+            probs_start_safe = probs_start[probs_start > 0]
+            entropy_start = float(-np.sum(probs_start_safe * np.log(probs_start_safe)))
 
             grad = compute_pav_rl_gradient(
                 policy, trajectories, Q_mu, V_mu, alpha, gamma, Q_pi=Q_pi
             )
+
+            # Save theta for delta-V decomposition
+            theta_saved = policy.theta.copy()
+
             update_policy(policy, grad, lr)
             update_count += 1
+
+            # Compute delta-V decomposition
+            # Hypothetical Q^pi-only update from saved theta
+            policy_qpi_only = TabularSoftmaxPolicy(env.n_states, env.n_actions)
+            policy_qpi_only.theta = theta_saved.copy()
+            grad_qpi = compute_pav_rl_gradient(
+                policy_qpi_only, trajectories, Q_mu, V_mu, 0.0, gamma, Q_pi=Q_pi
+            )
+            update_policy(policy_qpi_only, grad_qpi, lr)
+            _, V_pi_qpi = compute_student_qvalues(env, policy_qpi_only, gamma)
+            delta_v_qpi = float(V_pi_qpi[start_idx]) - V_before
+
+            _, V_pi_new = compute_student_qvalues(env, policy, gamma)
+            delta_v_total = float(V_pi_new[start_idx]) - V_before
+            delta_v_amu = delta_v_total - delta_v_qpi
+
+            # Build diagnostics dict matching exact mode keys
+            A_mu = (Q_mu - V_mu[:, None]) if Q_mu is not None else None
+            q_component = (1.0 - alpha) * Q_pi
+            a_component = alpha * A_mu if A_mu is not None else np.zeros_like(Q_pi)
+
+            step_diag = {
+                'q_pi_l2': float(np.linalg.norm(q_component)),
+                'q_pi_max': float(np.abs(q_component).max()),
+                'a_mu_l2': float(np.linalg.norm(a_component)),
+                'a_mu_max': float(np.abs(a_component).max()),
+                'a_mu_mean': float(A_mu.mean()) if A_mu is not None else 0.0,
+                'a_mu_var': float(A_mu.var()) if A_mu is not None else 0.0,
+                'a_mu_kurtosis': float(_safe_kurtosis(A_mu)) if A_mu is not None else 0.0,
+                'a_mu_min_val': float(A_mu.min()) if A_mu is not None else 0.0,
+                'a_mu_max_val': float(A_mu.max()) if A_mu is not None else 0.0,
+                'delta_v_total': delta_v_total,
+                'delta_v_qpi': delta_v_qpi,
+                'delta_v_amu': delta_v_amu,
+                'policy_entropy_start': entropy_start,
+                'step': update_count - 1,
+            }
+            all_diagnostics.append(step_diag)
 
             if update_count % eval_interval == 0:
                 eval_results = evaluate_policy(
                     env, policy, n_episodes=eval_n_episodes, rng=rng
                 )
                 vis_m = visitation_metrics(cumulative_visitation)
-                start_idx = env.state_to_idx(env.start)
                 _, V_pi_undiscounted = compute_student_qvalues(
                     env, policy, gamma_undiscounted
                 )
@@ -136,7 +217,7 @@ def run_experiment(
                     'steps': total_steps,
                     'mean_reward': eval_results['mean_reward'],
                     'goal_rate': eval_results['goal_rate'],
-                    'exact_V_start': float(V_pi[start_idx]),
+                    'exact_V_start': float(V_pi_new[start_idx]),
                     'exact_V_start_undiscounted': float(
                         V_pi_undiscounted[start_idx]
                     ),
@@ -172,6 +253,7 @@ def run_experiment(
         'final_total_visits': final_vis['total_visits'],
         'visitation_counts': cumulative_visitation,
         'history': history,
+        'diagnostics': all_diagnostics,
         'budget_mode': 'exact' if exact_gradient else 'sample',
         'exact_gradient': exact_gradient,
     }
