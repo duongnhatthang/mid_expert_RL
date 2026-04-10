@@ -646,19 +646,19 @@ def plot_reward_vs_teacher_cap_zeta(df: pd.DataFrame, figures_dir: str):
                                     fontsize=5, color=text_color)
                         # Highlight cells relative to the vanilla NPG baseline.
                         # Skip the α=0 column (trivially equal) and undefined
-                        # baselines. Use SEM-aware tolerance: a cell counts as
-                        # "equal" if it's within ±SEM of the baseline, "better"
-                        # if it strictly exceeds baseline + SEM. Colours are
-                        # chosen for high contrast with the viridis colormap
-                        # (which spans dark-purple → blue → green → yellow), so
-                        # we avoid yellow/green and pick deep magenta + white.
+                        # baselines. Comparison is done at the DISPLAYED
+                        # precision (2 decimals) so the highlight matches what
+                        # the reader sees in the cell — a cell labeled "0.96"
+                        # is treated as equal to a vanilla baseline of "0.96"
+                        # even if the underlying floats differ by 0.001.
                         if alpha != 0.0 and not np.isnan(vanilla_mean):
-                            tol = sem if not np.isnan(sem) else 1e-9
-                            if val > vanilla_mean + tol:
+                            val_r = round(val, 2)
+                            van_r = round(vanilla_mean, 2)
+                            if val_r > van_r:
                                 edge = '#ff0000'  # pure red: strictly better
                                 lw = 2.0
-                            elif val >= vanilla_mean - tol:
-                                edge = '#ff7eb6'  # warm pink: equal within SEM
+                            elif val_r == van_r:
+                                edge = '#ff7eb6'  # warm pink: equal at display precision
                                 lw = 1.6
                             else:
                                 edge = None
@@ -706,9 +706,9 @@ def plot_reward_vs_teacher_cap_zeta(df: pd.DataFrame, figures_dir: str):
             r'Row $c=0$ is uniform-random teacher ($\zeta$ is a no-op), '
             r'replicated across $\zeta$ for display.'
             '\n'
-            r'Outlines (vs. vanilla NPG baseline at $\alpha=0$, same (budget, horizon)): '
-            r'RED = strictly better (mean $>$ baseline$+$SEM),  '
-            r'PINK = equal within SEM.',
+            r'Outlines (vs. vanilla NPG baseline at $\alpha=0$, same (budget, horizon), '
+            r'compared at displayed 2-decimal precision): '
+            r'RED = strictly better,  PINK = equal.',
             fontsize=11, fontweight='bold')
         plt.tight_layout(rect=[0, 0, 0.90, 0.92])
         save_path = os.path.join(figures_dir, f'cap_zeta_reward_dist{dist}.png')
