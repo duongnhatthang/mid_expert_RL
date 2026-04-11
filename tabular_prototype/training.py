@@ -173,6 +173,17 @@ def update_policy(policy: TabularSoftmaxPolicy, grad: np.ndarray, lr: float):
     policy.theta += lr * grad
 
 
+def _safe_kurtosis(arr: np.ndarray) -> float:
+    """Compute excess kurtosis, returning 0.0 if variance is zero."""
+    flat = arr.ravel()
+    var = flat.var()
+    if var == 0:
+        return 0.0
+    mean = flat.mean()
+    centered = flat - mean
+    return float((centered ** 4).mean() / (var ** 2) - 3.0)
+
+
 def exact_npg_update(
     policy: TabularSoftmaxPolicy,
     Q_pi: np.ndarray,
@@ -180,7 +191,7 @@ def exact_npg_update(
     V_mu: Optional[np.ndarray],
     alpha: float,
     lr: float,
-):
+) -> dict:
     """
     Exact NPG update for tabular softmax (mirror descent).
 
@@ -190,12 +201,56 @@ def exact_npg_update(
     The state-dependent offset ν cancels in the softmax normalization.
 
     When Q_mu/V_mu are None (no teacher), reduces to θ += lr · Q^π.
+
+    Returns a diagnostics dict with per-step statistics.
     """
+    q_component = (1.0 - alpha) * Q_pi
+
     if Q_mu is not None and V_mu is not None:
         A_mu = Q_mu - V_mu[:, None]
-        policy.theta += lr * ((1.0 - alpha) * Q_pi + alpha * A_mu)
+        a_component = alpha * A_mu
+        policy.theta += lr * (q_component + a_component)
+        # Cosine similarity between the two update directions, flattened over
+        # all (s, a). Indicates whether the teacher is REDIRECTING the student
+        # (negative/small cosine) or AMPLIFYING its own gradient (cosine→1).
+        # A small-magnitude teacher can still steer the softmax if its
+        # direction is persistently different from Q^π.
+        q_flat = q_component.reshape(-1)
+        a_flat = a_component.reshape(-1)
+        q_norm = float(np.linalg.norm(q_flat))
+        a_norm = float(np.linalg.norm(a_flat))
+        if q_norm > 0 and a_norm > 0:
+            cos_sim = float(q_flat @ a_flat / (q_norm * a_norm))
+        else:
+            cos_sim = 0.0
+        diag = {
+            'q_pi_l2': float(np.linalg.norm(q_component)),
+            'q_pi_max': float(np.abs(q_component).max()),
+            'a_mu_l2': float(np.linalg.norm(a_component)),
+            'a_mu_max': float(np.abs(a_component).max()),
+            'a_mu_mean': float(A_mu.mean()),
+            'a_mu_var': float(A_mu.var()),
+            'a_mu_kurtosis': _safe_kurtosis(A_mu),
+            'a_mu_min_val': float(A_mu.min()),
+            'a_mu_max_val': float(A_mu.max()),
+            'cos_q_a': cos_sim,
+        }
     else:
         policy.theta += lr * Q_pi
+        diag = {
+            'q_pi_l2': float(np.linalg.norm(q_component)),
+            'q_pi_max': float(np.abs(q_component).max()),
+            'a_mu_l2': 0.0,
+            'a_mu_max': 0.0,
+            'a_mu_mean': 0.0,
+            'a_mu_var': 0.0,
+            'a_mu_kurtosis': 0.0,
+            'a_mu_min_val': 0.0,
+            'a_mu_max_val': 0.0,
+            'cos_q_a': 0.0,
+        }
+
+    return diag
 
 
 def evaluate_policy(

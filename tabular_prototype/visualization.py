@@ -1219,3 +1219,184 @@ def plot_learning_curves_improved(
         print(f"Improved learning curve figure saved to {save_path}")
 
     return fig
+
+
+# =============================================================================
+# Diagnostic Visualization
+# =============================================================================
+
+def plot_magnitude_decomposition(
+    diagnostics_by_label: Dict[str, List[Dict]],
+    title: str = 'Signal Magnitude Decomposition',
+    save_path: Optional[str] = None,
+):
+    """
+    Plot ||(1-alpha)*Q^pi|| and ||alpha*A^mu|| over update steps.
+    2x2 grid: top row = absolute magnitudes (L2, Max), bottom row = Q^pi/A^mu ratio.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+
+    labels = list(diagnostics_by_label.keys())
+    colors = cm.tab10(np.linspace(0, 1, max(10, len(labels))))[:len(labels)]
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    norms = [
+        ('q_pi_l2', 'a_mu_l2', 'L2 Norm'),
+        ('q_pi_max', 'a_mu_max', 'Max Norm'),
+    ]
+
+    for col, (q_key, a_key, norm_label) in enumerate(norms):
+        ax_abs = axes[0, col]
+        ax_ratio = axes[1, col]
+
+        for i, label in enumerate(labels):
+            diags = diagnostics_by_label[label]
+            steps = [d['step'] for d in diags]
+            q_vals = [d[q_key] for d in diags]
+            a_vals = [d[a_key] for d in diags]
+
+            ax_abs.plot(steps, q_vals, color=colors[i], linestyle='-',
+                       label=f'{label} Q^pi', linewidth=1.5)
+            ax_abs.plot(steps, a_vals, color=colors[i], linestyle='--',
+                       label=f'{label} A^mu', linewidth=1.5)
+
+            ratios = [q / max(a, 1e-10) for q, a in zip(q_vals, a_vals)]
+            ax_ratio.plot(steps, ratios, color=colors[i], label=label, linewidth=1.5)
+
+        ax_abs.set_title(f'Component Magnitudes ({norm_label})')
+        ax_abs.set_ylabel(norm_label)
+        ax_abs.legend(fontsize=6, ncol=2)
+        ax_abs.grid(True, alpha=0.3)
+
+        ax_ratio.set_title(f'Q^pi / A^mu Ratio ({norm_label})')
+        ax_ratio.set_ylabel('Ratio')
+        ax_ratio.set_xlabel('Update Step')
+        ax_ratio.legend(fontsize=7)
+        ax_ratio.grid(True, alpha=0.3)
+        ax_ratio.set_yscale('log')
+
+    fig.suptitle(title, fontsize=13, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_delta_v_decomposition(
+    diagnostics_by_label: Dict[str, List[Dict]],
+    title: str = 'Per-Step Delta-V Decomposition',
+    save_path: Optional[str] = None,
+):
+    """Plot per-step Delta-V^pi(s_start) decomposed into Q^pi and A^mu contributions."""
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+
+    labels = list(diagnostics_by_label.keys())
+    colors = cm.tab10(np.linspace(0, 1, max(10, len(labels))))[:len(labels)]
+
+    fig, axes = plt.subplots(1, len(labels), figsize=(5 * len(labels), 4),
+                              squeeze=False)
+
+    for i, label in enumerate(labels):
+        ax = axes[0, i]
+        diags = diagnostics_by_label[label]
+        steps = [d['step'] for d in diags]
+        dv_qpi = [d['delta_v_qpi'] for d in diags]
+        dv_amu = [d['delta_v_amu'] for d in diags]
+        dv_total = [d['delta_v_total'] for d in diags]
+
+        ax.bar(steps, dv_qpi, color='steelblue', alpha=0.7, label='Q^pi contribution')
+        ax.bar(steps, dv_amu, bottom=dv_qpi, color='coral', alpha=0.7, label='A^mu contribution')
+        ax.plot(steps, dv_total, color='black', linewidth=1, label='Total Delta-V', marker='.')
+        ax.axhline(0, color='gray', linestyle='--', linewidth=0.5)
+
+        ax.set_title(label, fontsize=10)
+        ax.set_xlabel('Update Step')
+        if i == 0:
+            ax.set_ylabel('Delta V^pi(s_start)')
+        ax.legend(fontsize=7)
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle(title, fontsize=13, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_amu_distribution_evolution(
+    diagnostics_by_label: Dict[str, List[Dict]],
+    title: str = 'A^mu Distribution Stats Over Time',
+    save_path: Optional[str] = None,
+):
+    """Plot A^mu distribution statistics (mean, var, kurtosis, min, max) over steps."""
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+
+    labels = list(diagnostics_by_label.keys())
+    colors = cm.tab10(np.linspace(0, 1, max(10, len(labels))))[:len(labels)]
+    stats = [
+        ('a_mu_mean', 'Mean'),
+        ('a_mu_var', 'Variance'),
+        ('a_mu_kurtosis', 'Excess Kurtosis'),
+        ('a_mu_min_val', 'Min'),
+        ('a_mu_max_val', 'Max'),
+    ]
+
+    fig, axes = plt.subplots(len(stats), 1, figsize=(10, 3 * len(stats)), sharex=True)
+
+    for si, (key, stat_label) in enumerate(stats):
+        ax = axes[si]
+        for i, label in enumerate(labels):
+            diags = diagnostics_by_label[label]
+            steps = [d['step'] for d in diags]
+            vals = [d[key] for d in diags]
+            ax.plot(steps, vals, color=colors[i], label=label, linewidth=1.5)
+        ax.set_ylabel(stat_label)
+        ax.grid(True, alpha=0.3)
+        if si == 0:
+            ax.legend(fontsize=7)
+
+    axes[-1].set_xlabel('Update Step')
+    fig.suptitle(title, fontsize=13, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_entropy_trajectory(
+    diagnostics_by_label: Dict[str, List[Dict]],
+    title: str = 'Policy Entropy at Start State',
+    save_path: Optional[str] = None,
+):
+    """Plot policy entropy at s_start over update steps."""
+    import matplotlib.pyplot as plt
+    from matplotlib import cm
+
+    labels = list(diagnostics_by_label.keys())
+    colors = cm.tab10(np.linspace(0, 1, max(10, len(labels))))[:len(labels)]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    for i, label in enumerate(labels):
+        diags = diagnostics_by_label[label]
+        steps = [d['step'] for d in diags]
+        entropy = [d['policy_entropy_start'] for d in diags]
+        ax.plot(steps, entropy, color=colors[i], label=label, linewidth=1.5)
+
+    ax.set_xlabel('Update Step')
+    ax.set_ylabel('Entropy (nats)')
+    ax.set_title(title, fontsize=13, fontweight='bold')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
