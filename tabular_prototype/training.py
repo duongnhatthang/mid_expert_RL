@@ -210,6 +210,19 @@ def exact_npg_update(
         A_mu = Q_mu - V_mu[:, None]
         a_component = alpha * A_mu
         policy.theta += lr * (q_component + a_component)
+        # Cosine similarity between the two update directions, flattened over
+        # all (s, a). Indicates whether the teacher is REDIRECTING the student
+        # (negative/small cosine) or AMPLIFYING its own gradient (cosine→1).
+        # A small-magnitude teacher can still steer the softmax if its
+        # direction is persistently different from Q^π.
+        q_flat = q_component.reshape(-1)
+        a_flat = a_component.reshape(-1)
+        q_norm = float(np.linalg.norm(q_flat))
+        a_norm = float(np.linalg.norm(a_flat))
+        if q_norm > 0 and a_norm > 0:
+            cos_sim = float(q_flat @ a_flat / (q_norm * a_norm))
+        else:
+            cos_sim = 0.0
         diag = {
             'q_pi_l2': float(np.linalg.norm(q_component)),
             'q_pi_max': float(np.abs(q_component).max()),
@@ -220,6 +233,7 @@ def exact_npg_update(
             'a_mu_kurtosis': _safe_kurtosis(A_mu),
             'a_mu_min_val': float(A_mu.min()),
             'a_mu_max_val': float(A_mu.max()),
+            'cos_q_a': cos_sim,
         }
     else:
         policy.theta += lr * Q_pi
@@ -233,6 +247,7 @@ def exact_npg_update(
             'a_mu_kurtosis': 0.0,
             'a_mu_min_val': 0.0,
             'a_mu_max_val': 0.0,
+            'cos_q_a': 0.0,
         }
 
     return diag

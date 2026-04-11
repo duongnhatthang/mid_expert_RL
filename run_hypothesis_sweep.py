@@ -599,9 +599,20 @@ def plot_reward_vs_teacher_cap_zeta(df: pd.DataFrame, figures_dir: str):
                           (dist_df['horizon_type'] == h_type)]
 
             # Vanilla NPG baseline (α=0) for this (budget, horizon). Teacher is
-            # irrelevant at α=0, so we average all seeds across all teacher cells.
-            vanilla_rows = sub[sub['alpha'] == 0.0][metric]
-            vanilla_mean = float(vanilla_rows.mean()) if len(vanilla_rows) else np.nan
+            # irrelevant at α=0 and the sweep replicates a single α=0 run
+            # across all (cap, ζ) slots, so we MUST deduplicate by seed before
+            # averaging — summing 160 replicated floats accumulates enough
+            # rounding error that the mean differs from any individual cell's
+            # displayed value at 2-decimal precision (e.g. cells show "0.11"
+            # but the summed mean rounds to "0.10"). Taking the per-seed mean
+            # on deduplicated rows yields exactly the same number that the
+            # α=0 column cells display.
+            vanilla_rows_all = sub[sub['alpha'] == 0.0]
+            if len(vanilla_rows_all):
+                vanilla_by_seed = vanilla_rows_all.drop_duplicates(subset='seed')
+                vanilla_mean = float(vanilla_by_seed[metric].mean())
+            else:
+                vanilla_mean = np.nan
 
             for ci, alpha in enumerate(ALPHA_VALUES):
                 ax = axes[ri, ci]
@@ -646,18 +657,19 @@ def plot_reward_vs_teacher_cap_zeta(df: pd.DataFrame, figures_dir: str):
                                     fontsize=5, color=text_color)
                         # Highlight cells relative to the vanilla NPG baseline.
                         # Skip the α=0 column (trivially equal) and undefined
-                        # baselines. Comparison is done at the DISPLAYED
-                        # precision (2 decimals) so the highlight matches what
-                        # the reader sees in the cell — a cell labeled "0.96"
-                        # is treated as equal to a vanilla baseline of "0.96"
-                        # even if the underlying floats differ by 0.001.
+                        # baselines. Comparison MUST use the same rounding rule
+                        # as the cell text (f-string {:.2f}), not Python's
+                        # round(), because the two disagree on floating-point
+                        # edge cases (e.g. round(0.885, 2) == 0.88 but
+                        # f'{0.885:.2f}' == '0.89'). We want the highlight to
+                        # match what the reader sees in the cell.
                         if alpha != 0.0 and not np.isnan(vanilla_mean):
-                            val_r = round(val, 2)
-                            van_r = round(vanilla_mean, 2)
-                            if val_r > van_r:
+                            val_disp = float(f'{val:.2f}')
+                            van_disp = float(f'{vanilla_mean:.2f}')
+                            if val_disp > van_disp:
                                 edge = '#ff0000'  # pure red: strictly better
                                 lw = 2.0
-                            elif val_r == van_r:
+                            elif val_disp == van_disp:
                                 edge = '#ff7eb6'  # warm pink: equal at display precision
                                 lw = 1.6
                             else:
@@ -1165,6 +1177,33 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                     cb_adv.set_label(r'$\max_a A^{\mu}(s,a)$', fontsize=9)
                     cb_adv.ax.tick_params(labelsize=7)
 
+                # Section separators in figure coordinates. Thick horizontal
+                # lines split budget bands; thin vertical lines split each
+                # (vis|adv) ζ pair from the next pair so readers can parse
+                # dense grids more easily.
+                from matplotlib.lines import Line2D
+                grid_left = axes[0, 0].get_position().x0
+                grid_right = axes[0, n_cols - 1].get_position().x1
+                for bi in range(n_budget - 1):
+                    bottom_row = bi * n_cap + n_cap - 1
+                    top_row = (bi + 1) * n_cap
+                    bot_bbox = axes[bottom_row, 0].get_position()
+                    top_bbox = axes[top_row, 0].get_position()
+                    y = (bot_bbox.y0 + top_bbox.y1) / 2.0
+                    fig.add_artist(Line2D(
+                        [grid_left, grid_right], [y, y],
+                        color='black', linewidth=1.3, zorder=10))
+                # Vertical separators between each ζ pair (zi=0..n_zeta-2)
+                grid_top = axes[0, 0].get_position().y1
+                grid_bot = axes[-1, 0].get_position().y0
+                for zi in range(n_zeta - 1):
+                    right_of_pair = axes[0, 2 * zi + 1].get_position()
+                    left_of_next = axes[0, 2 * zi + 2].get_position()
+                    x = (right_of_pair.x1 + left_of_next.x0) / 2.0
+                    fig.add_artist(Line2D(
+                        [x, x], [grid_bot, grid_top],
+                        color='black', linewidth=1.0, zorder=10))
+
                 alpha_label = 'Vanilla NPG' if alpha == 0.0 else rf'$\alpha={alpha}$'
                 fig.suptitle(
                     rf'Cap$\times\zeta$ visitation + teacher advantage — '
@@ -1372,6 +1411,35 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 cb_adv.set_label('Advantage', fontsize=9)
                 cb_adv.ax.tick_params(labelsize=7)
 
+            # Section separators drawn in figure coordinates so they can cross
+            # subplot boundaries. Horizontal lines split the stacked budget
+            # bands; a vertical line separates the α columns from the shared
+            # advantage column.
+            from matplotlib.lines import Line2D
+            grid_left = axes[0, 0].get_position().x0
+            grid_right = axes[0, n_cols - 1].get_position().x1
+            # Budget-band separators — drawn between the bottom of band `bi`
+            # and the top of band `bi+1`.
+            for bi in range(n_budget - 1):
+                bottom_row = bi * n_tv + n_tv - 1
+                top_row = (bi + 1) * n_tv
+                bot_bbox = axes[bottom_row, 0].get_position()
+                top_bbox = axes[top_row, 0].get_position()
+                y = (bot_bbox.y0 + top_bbox.y1) / 2.0
+                fig.add_artist(Line2D(
+                    [grid_left, grid_right], [y, y],
+                    color='black', linewidth=1.3, zorder=10))
+            # Vertical separator between the α-column block and the advantage
+            # column so readers see the advantage as a distinct panel.
+            right_alpha = axes[0, n_alpha - 1].get_position()
+            adv_col = axes[0, n_alpha].get_position()
+            x_sep = (right_alpha.x1 + adv_col.x0) / 2.0
+            grid_top = axes[0, 0].get_position().y1
+            grid_bot = axes[-1, 0].get_position().y0
+            fig.add_artist(Line2D(
+                [x_sep, x_sep], [grid_bot, grid_top],
+                color='black', linewidth=1.3, zorder=10))
+
             fig.suptitle(
                 rf'State visitation + teacher advantage — distance={dist}, '
                 rf'horizon={horizon_val} ({h_type})'
@@ -1435,6 +1503,11 @@ DELTA_V_SUBTITLE = (
     r"$\theta_{\mathrm{old}}$; $\Delta_{A^{\mu}}\equiv\Delta V^{\pi}(s_0)-\Delta_{Q^{\pi}}$."
     '\n'
     r'(Equality is approximate since softmax couples the two directions.)'
+    '\n'
+    r'AUC box (upper-right of each subplot, top-5 only): '
+    r'$\int\Delta V^{\pi}(s_0)\,dt$ '
+    r'(trapezoidal rule) $\approx V^{\pi_{\mathrm{final}}}(s_0)-V^{\pi_{\mathrm{init}}}(s_0)$, '
+    r'ranked best$\to$worst — larger $=$ more total improvement.'
 )
 
 
@@ -1506,7 +1579,11 @@ def _plot_consolidated_diagnostics(
 
             if plot_kind == 'delta_v':
                 # One thin line per teacher value with total Δ-V only (stacked bars
-                # would be unreadable at this density).
+                # would be unreadable at this density). We also compute the AUC
+                # (cumulative ΔV across all update steps) per teacher and show
+                # it as a small annotation so baselines can be compared at a
+                # glance — larger AUC = larger total improvement in V^π(s₀).
+                auc_by_tv = {}
                 for tv in teacher_vals:
                     if tv not in diags_by_tv:
                         continue
@@ -1515,7 +1592,40 @@ def _plot_consolidated_diagnostics(
                     dv_total = [d['delta_v_total'] for d in diags]
                     ax.plot(steps, dv_total, color=tv_color[tv],
                             linewidth=1.2, label=_teacher_label(mode, tv))
+                    # AUC via trapezoidal rule over the step grid. This
+                    # approximates ∫ΔV dt and, since ΔV is per-step change in
+                    # V^π(s₀), telescopes to V^π_final(s₀) − V^π_init(s₀).
+                    if len(steps) >= 2:
+                        # np.trapezoid replaces np.trapz in numpy 2.x; fall
+                        # back to trapz for older numpy.
+                        trap = getattr(np, 'trapezoid', None) or np.trapz
+                        auc_by_tv[tv] = float(trap(dv_total, steps))
+                    elif len(steps) == 1:
+                        auc_by_tv[tv] = float(dv_total[0])
                 ax.axhline(0, color='gray', linestyle='--', linewidth=0.5)
+                # Rank teachers by AUC (largest first) and show only the
+                # TOP 5 in the upper-right corner — listing all teachers
+                # (16 for cap_zeta) blocks too much of the curves. The
+                # suptitle notes that we truncate to top-5.
+                if auc_by_tv:
+                    ranked = sorted(auc_by_tv.items(), key=lambda x: -x[1])
+                    top_n = 5
+                    lines = [
+                        rf'{_teacher_label(mode, tv)}: {auc:+.2f}'
+                        for tv, auc in ranked[:top_n]
+                    ]
+                    suffix = ''
+                    if len(ranked) > top_n:
+                        suffix = f'\n(+{len(ranked) - top_n} more)'
+                    auc_text = f'Top-{min(top_n, len(ranked))} AUC\n' + '\n'.join(lines) + suffix
+                    ax.text(0.98, 0.98, auc_text,
+                            transform=ax.transAxes,
+                            ha='right', va='top', fontsize=5,
+                            family='monospace',
+                            bbox=dict(boxstyle='round,pad=0.2',
+                                      facecolor='white',
+                                      edgecolor='lightgray',
+                                      alpha=0.85))
             else:
                 for tv in teacher_vals:
                     if tv not in diags_by_tv:
@@ -1523,7 +1633,7 @@ def _plot_consolidated_diagnostics(
                     diags = diags_by_tv[tv]
                     steps = [d['step'] for d in diags]
                     for mk_i, (metric, style) in enumerate(metric_keys):
-                        vals = [d[metric] for d in diags]
+                        vals = [d.get(metric, 0.0) for d in diags]
                         # Only label the first metric line per teacher — the
                         # suptitle explains what each line style represents.
                         line_label = (_teacher_label(mode, tv)
@@ -1531,6 +1641,11 @@ def _plot_consolidated_diagnostics(
                         ax.plot(steps, vals, color=tv_color[tv],
                                 linewidth=1.2, linestyle=style,
                                 label=line_label)
+                if plot_kind == 'cosine':
+                    # Cosine is in [-1, 1]; pin the axis and draw zero line so
+                    # orthogonal directions are visually obvious.
+                    ax.set_ylim(-1.05, 1.05)
+                    ax.axhline(0, color='gray', linestyle='--', linewidth=0.5)
 
             ax.grid(True, alpha=0.3)
             if ri == 0:
@@ -1634,6 +1749,23 @@ def _plot_sweep_diagnostics(all_results: list, mode: str, figures_dir: str):
             ),
             ylabel=r'$H(\pi(\cdot\mid s_0))$  (nats)',
             save_path=os.path.join(diag_dir, f'entropy_{suffix}.png'),
+        )
+
+        _plot_consolidated_diagnostics(
+            sub_groups, mode,
+            metric_keys=[('cos_q_a', '-')],
+            plot_kind='cosine',
+            title=(
+                r'Update-direction cosine similarity — ' + base_title + '\n'
+                r'$\cos\theta$ between $(1-\alpha)\,Q^{\pi}$ and '
+                r'$\alpha\,A^{\mu}$, flattened over all $(s,a)$, per NPG step.'
+                '\n'
+                r'$\cos\to 1$: teacher AMPLIFIES $Q^{\pi}$ direction. '
+                r'$\cos\to 0$: orthogonal. '
+                r'$\cos\to -1$: teacher REDIRECTS against $Q^{\pi}$.'
+            ),
+            ylabel=r'$\cos\theta$',
+            save_path=os.path.join(diag_dir, f'cosine_{suffix}.png'),
         )
 
     print(f"Diagnostic plots saved to {diag_dir}/")
