@@ -194,6 +194,12 @@ def run_experiment(
             q_component = (1.0 - alpha) * Q_pi
             a_component = alpha * A_mu if A_mu is not None else np.zeros_like(Q_pi)
 
+            q_flat = q_component.reshape(-1)
+            a_flat = a_component.reshape(-1)
+            q_norm = float(np.linalg.norm(q_flat))
+            a_norm = float(np.linalg.norm(a_flat))
+            cos_sim = float(q_flat @ a_flat / (q_norm * a_norm)) if q_norm > 0 and a_norm > 0 else 0.0
+
             step_diag = {
                 'q_pi_l2': float(np.linalg.norm(q_component)),
                 'q_pi_max': float(np.abs(q_component).max()),
@@ -204,6 +210,7 @@ def run_experiment(
                 'a_mu_kurtosis': float(_safe_kurtosis(A_mu)) if A_mu is not None else 0.0,
                 'a_mu_min_val': float(A_mu.min()) if A_mu is not None else 0.0,
                 'a_mu_max_val': float(A_mu.max()) if A_mu is not None else 0.0,
+                'cos_q_a': cos_sim,
                 'delta_v_total': delta_v_total,
                 'delta_v_qpi': delta_v_qpi,
                 'delta_v_amu': delta_v_amu,
