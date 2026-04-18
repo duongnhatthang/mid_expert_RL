@@ -257,14 +257,28 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                 im = ax.imshow(grid_reward, aspect='auto', cmap='viridis',
                                 vmin=0, vmax=1, origin='lower')
 
+                # Build T_sat grid for annotation
+                grid_tsat = np.full((len(lrs), len(tpus)), np.nan)
+                for i, lr in enumerate(lrs):
+                    for j, tpu in enumerate(tpus):
+                        ck = f'lr={lr}_tpu={tpu}'
+                        if ck in combos:
+                            grid_tsat[i, j] = combos[ck]['T_sat_max']
+
                 for i in range(len(lrs)):
                     for j in range(len(tpus)):
                         v = grid_reward[i, j]
                         if np.isnan(v):
                             continue
                         color = 'white' if v < 0.6 else 'black'
-                        ax.text(j, i, f'{v:.2f}', ha='center', va='center',
-                                fontsize=7, color=color)
+                        # Reward on top line, T_sat below
+                        ax.text(j, i - 0.15, f'{v:.2f}', ha='center', va='center',
+                                fontsize=7, fontweight='bold', color=color)
+                        ts = grid_tsat[i, j]
+                        if not np.isnan(ts):
+                            ts_label = str(int(ts)) if ts < 2000 else 'cap'
+                            ax.text(j, i + 0.2, ts_label, ha='center', va='center',
+                                    fontsize=5.5, color=color, alpha=0.8)
                         if lrs[i] == cal['best_lr'] and tpus[j] == cal['best_traj_per_update']:
                             ax.add_patch(plt.Rectangle(
                                 (j - 0.5, i - 0.5), 1, 1,
@@ -282,20 +296,6 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                     ax.set_title(rf'$H={h_vals[h_type]}$ ({h_type} horizon)',
                                  fontsize=10, fontweight='bold')
 
-                # Best combo annotation
-                best_text = (
-                    rf'Best: LR={cal["best_lr"]}, TPU={cal["best_traj_per_update"]}'
-                    f'\n'
-                    rf'$T_{{\mathrm{{sat}}}}$={cal["T_sat"]}, '
-                    f'budgets={cal["budgets"]}'
-                )
-                ax.text(0.02, 0.02, best_text,
-                        transform=ax.transAxes, ha='left', va='bottom',
-                        fontsize=5.5, family='monospace',
-                        bbox=dict(boxstyle='round,pad=0.2',
-                                  facecolor='white', edgecolor='lightgray',
-                                  alpha=0.9))
-
         if im is not None:
             fig.subplots_adjust(right=0.88)
             cax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
@@ -306,10 +306,11 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
         fig.suptitle(
             rf'Sample-mode calibration — {goal_label}'
             '\n'
-            r'Each subplot: final mean reward of vanilla NPG at budget cap '
-            r'(2000 obs) for each (LR $\times$ trajectories/update) combo.'
+            r'Each cell: final mean reward (bold) and $T_{\mathrm{sat}}$ '
+            r'(small, or "cap" if $\geq$ 2000 obs) per (LR $\times$ TPU) combo.'
             '\n'
-            r'Red outline = best combo chosen for the sample-mode sweep. '
+            r'Red outline = best combo chosen for sweep '
+            r'(fastest $T_{\mathrm{sat}}$ with reward $\geq 0.95$). '
             r'Rows: goal distance $d$. Columns: episode horizon $H$.',
             fontsize=11, fontweight='bold')
         plt.tight_layout(rect=[0, 0, 0.88, 0.90])
