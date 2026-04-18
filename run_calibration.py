@@ -320,10 +320,10 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
         plt.close(fig)
         print(f"Saved {save_path}")
 
-    # --- Figure 2: T_sat comparison (exact vs sample) ---
-    # One figure per n_goals, rows=distance, cols=horizon — matching the
-    # heatmap layout. Each subplot is a side-by-side bar of exact vs sample
-    # T_sat with budget breakpoints annotated.
+    # --- Figure 2: T_sat heatmaps (exact and sample side by side) ---
+    # One figure per n_goals. Two heatmaps: rows=distance, cols=horizon.
+    # Left = exact T_sat (update steps), right = sample T_sat (observations).
+    # Each cell shows T_sat (bold) and budget breakpoints (small).
     exact_path = CALIBRATION_PATH
     exact_cal = {}
     if os.path.exists(exact_path):
@@ -333,69 +333,70 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
     for ng in N_GOALS_LIST:
         n_rows = len(DISTANCES)
         n_cols = len(HORIZON_TYPES)
-        fig, axes = plt.subplots(n_rows, n_cols,
-                                  figsize=(5.0 * n_cols, 2.5 * n_rows + 2.0),
-                                  squeeze=False)
+
+        # Build grids
+        exact_grid = np.full((n_rows, n_cols), np.nan)
+        sample_grid = np.full((n_rows, n_cols), np.nan)
+        exact_budgets = {}
+        sample_budgets = {}
         for ri, dist in enumerate(DISTANCES):
             for ci, h_type in enumerate(HORIZON_TYPES):
-                ax = axes[ri, ci]
                 key = f'dist={dist}_{h_type}_ng={ng}_grid={GRID_SIZE}'
-                cal = all_results.get(key)
                 exact_key = key.replace('_grid=9', f'_lr={LR}_grid=9')
                 ecal = exact_cal.get(exact_key, {})
+                cal = all_results.get(key)
+                if ecal.get('T_sat'):
+                    exact_grid[ri, ci] = ecal['T_sat']
+                    exact_budgets[(ri, ci)] = ecal.get('budgets', [])
+                if cal:
+                    sample_grid[ri, ci] = cal['T_sat']
+                    sample_budgets[(ri, ci)] = cal.get('budgets', [])
 
-                et = ecal.get('T_sat', 0)
-                eb = ecal.get('budgets', [])
-                st = cal['T_sat'] if cal else 0
-                sb = cal['budgets'] if cal else []
+        fig, (ax_e, ax_s) = plt.subplots(1, 2,
+                                          figsize=(4.5 * 2 + 2.0, 3.0 * n_rows / 2 + 1.5))
 
-                # Use log scale so exact bars (small) are visible alongside
-                # sample bars (large). Set floor at 1 for log safety.
-                x = np.array([0, 1])
-                bars = ax.bar(x, [max(et, 1), max(st, 1)],
-                              color=['steelblue', 'coral'],
-                              alpha=0.8, width=0.6)
-                ax.set_yscale('log')
-                ax.set_xticks(x)
-                ax.set_xticklabels(['Exact\n(updates)', 'Sample\n(obs)'],
-                                   fontsize=8)
+        for ax, grid, budgets_map, label, cmap in [
+            (ax_e, exact_grid, exact_budgets, 'Exact (update steps)', 'YlOrRd'),
+            (ax_s, sample_grid, sample_budgets, 'Sample (observations)', 'YlOrRd'),
+        ]:
+            vmax = np.nanmax(grid) if not np.all(np.isnan(grid)) else 1
+            im = ax.imshow(grid, aspect='auto', cmap=cmap, vmin=0, vmax=vmax,
+                            origin='upper')
+            for ri in range(n_rows):
+                for ci in range(n_cols):
+                    v = grid[ri, ci]
+                    if np.isnan(v):
+                        continue
+                    color = 'black' if v < vmax * 0.7 else 'white'
+                    ax.text(ci, ri - 0.15, str(int(v)),
+                            ha='center', va='center', fontsize=11,
+                            fontweight='bold', color=color)
+                    bud = budgets_map.get((ri, ci), [])
+                    if bud:
+                        bstr = ', '.join(str(b) for b in bud)
+                        ax.text(ci, ri + 0.2, f'[{bstr}]',
+                                ha='center', va='center', fontsize=6,
+                                color=color, alpha=0.85)
 
-                # Annotate T_sat above bar, budgets below the label
-                for bi, (bar, tsat, budgets) in enumerate(
-                        zip(bars, [et, st], [eb, sb])):
-                    h = bar.get_height()
-                    if h > 0:
-                        ax.text(bar.get_x() + bar.get_width() / 2, h * 1.1,
-                                str(int(h)),
-                                ha='center', va='bottom', fontsize=9,
-                                fontweight='bold')
-                    if budgets:
-                        bstr = ', '.join(str(b) for b in budgets)
-                        ax.text(bar.get_x() + bar.get_width() / 2,
-                                -0.22, f'[{bstr}]',
-                                ha='center', va='top', fontsize=5.5,
-                                transform=ax.get_xaxis_transform(),
-                                color='#333333')
-
-                ax.grid(True, alpha=0.3, axis='y')
-                if ci == 0:
-                    ax.set_ylabel(rf'$d={dist}$' + '\n' + r'$T_{\mathrm{sat}}$',
-                                  fontsize=9)
-                if ri == 0:
-                    ax.set_title(rf'$H={h_vals[h_type]}$ ({h_type})',
-                                 fontsize=10, fontweight='bold')
+            ax.set_xticks(range(n_cols))
+            ax.set_xticklabels([rf'$H={h_vals[h]}$ ({h})' for h in HORIZON_TYPES],
+                               fontsize=9)
+            ax.set_yticks(range(n_rows))
+            ax.set_yticklabels([rf'$d={d}$' for d in DISTANCES], fontsize=9)
+            ax.set_title(label, fontsize=11, fontweight='bold')
+            fig.colorbar(im, ax=ax, shrink=0.8, label=r'$T_{\mathrm{sat}}$')
 
         goal_label = '1 goal (zeta sweep)' if ng == 1 else f'{ng} goals (capability sweep)'
         fig.suptitle(
-            rf'$T_{{\mathrm{{sat}}}}$ comparison: exact vs sample — {goal_label}'
+            rf'$T_{{\mathrm{{sat}}}}$ — {goal_label}'
             '\n'
             r'$T_{\mathrm{sat}}$ = first step/obs where vanilla NPG reaches '
             r'$\geq 0.95$ mean reward.'
             '\n'
-            r'Sweep budget breakpoints $[T/5,\;T/3,\;T,\;2T]$ shown below each bar. '
+            r'Small text = sweep budget breakpoints $[T/5,\;T/3,\;T,\;2T]$. '
             r'Rows: distance $d$. Columns: horizon $H$.',
             fontsize=11, fontweight='bold')
-        plt.tight_layout(rect=[0, 0, 1, 0.90])
+        plt.tight_layout(rect=[0, 0, 1, 0.88])
         save_path = os.path.join(output_dir, f'calibration_tsat_ng{ng}.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
