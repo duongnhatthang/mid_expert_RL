@@ -220,28 +220,23 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
     lrs = sorted(SAMPLE_LR_VALUES)
     tpus = sorted(SAMPLE_TRAJ_PER_UPDATE)
 
-    # --- Figure 1: one figure PER DISTANCE, organized like sweep results ---
-    # Each figure: rows = horizon (small, large), cols = n_goals (1, 3).
-    # Each subplot = (LR × TPU) heatmap of T_sat.
+    # --- Figure 1: one figure PER N_GOALS ---
+    # Rows = distance (4, 6, 7, 8), cols = horizon (small, large).
+    # Each subplot = (LR × TPU) heatmap of final mean reward.
+    # Two figures total: ng=1 (zeta sweep), ng=3 (capability sweep).
     horizons = compute_exploration_thresholds(GRID_SIZE)
     h_vals = {'small': horizons['horizon_small'], 'large': horizons['horizon_large']}
 
-    # Global max T_sat for shared colour scale across all figures
-    max_tsat = 0
-    for key in configs:
-        for combo_data in all_results[key]['all_combos'].values():
-            max_tsat = max(max_tsat, combo_data['T_sat_max'])
-    if max_tsat == 0:
-        max_tsat = 2000
-
-    for dist in DISTANCES:
-        fig, axes = plt.subplots(len(HORIZON_TYPES), len(N_GOALS_LIST),
-                                  figsize=(4.0 * len(N_GOALS_LIST) + 1.5,
-                                           3.5 * len(HORIZON_TYPES) + 2.0),
+    for ng in N_GOALS_LIST:
+        n_rows = len(DISTANCES)
+        n_cols = len(HORIZON_TYPES)
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                  figsize=(4.5 * n_cols + 1.5,
+                                           3.2 * n_rows + 2.0),
                                   squeeze=False)
         im = None
-        for ri, h_type in enumerate(HORIZON_TYPES):
-            for ci, ng in enumerate(N_GOALS_LIST):
+        for ri, dist in enumerate(DISTANCES):
+            for ci, h_type in enumerate(HORIZON_TYPES):
                 ax = axes[ri, ci]
                 key = f'dist={dist}_{h_type}_ng={ng}_grid={GRID_SIZE}'
                 cal = all_results.get(key)
@@ -252,32 +247,24 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                     continue
 
                 combos = cal['all_combos']
-                grid_tsat = np.full((len(lrs), len(tpus)), np.nan)
                 grid_reward = np.full((len(lrs), len(tpus)), np.nan)
                 for i, lr in enumerate(lrs):
                     for j, tpu in enumerate(tpus):
                         ck = f'lr={lr}_tpu={tpu}'
                         if ck in combos:
-                            grid_tsat[i, j] = combos[ck]['T_sat_max']
                             grid_reward[i, j] = combos[ck]['final_reward_mean']
 
-                im = ax.imshow(grid_tsat, aspect='auto', cmap='viridis_r',
-                                vmin=0, vmax=max_tsat, origin='lower')
+                im = ax.imshow(grid_reward, aspect='auto', cmap='viridis',
+                                vmin=0, vmax=1, origin='lower')
 
                 for i in range(len(lrs)):
                     for j in range(len(tpus)):
-                        ts = grid_tsat[i, j]
-                        rw = grid_reward[i, j]
-                        if np.isnan(ts):
+                        v = grid_reward[i, j]
+                        if np.isnan(v):
                             continue
-                        color = 'white' if ts > max_tsat * 0.5 else 'black'
-                        ax.text(j, i - 0.12, f'{int(ts)}',
-                                ha='center', va='center', fontsize=7,
-                                fontweight='bold', color=color)
-                        if not np.isnan(rw):
-                            ax.text(j, i + 0.22, f'r={rw:.2f}',
-                                    ha='center', va='center', fontsize=6,
-                                    color=color)
+                        color = 'white' if v < 0.6 else 'black'
+                        ax.text(j, i, f'{v:.2f}', ha='center', va='center',
+                                fontsize=7, color=color)
                         if lrs[i] == cal['best_lr'] and tpus[j] == cal['best_traj_per_update']:
                             ax.add_patch(plt.Rectangle(
                                 (j - 0.5, i - 0.5), 1, 1,
@@ -287,16 +274,15 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                 ax.set_xticklabels([str(t) for t in tpus], fontsize=7)
                 ax.set_yticks(range(len(lrs)))
                 ax.set_yticklabels([str(l) for l in lrs], fontsize=7)
-                if ri == len(HORIZON_TYPES) - 1:
+                if ri == n_rows - 1:
                     ax.set_xlabel('trajectories / update', fontsize=9)
                 if ci == 0:
-                    ax.set_ylabel(f'H={h_vals[h_type]} ({h_type})\nlearning rate',
-                                  fontsize=9)
-                goal_label = '1 goal (zeta sweep)' if ng == 1 else f'{ng} goals (capability sweep)'
+                    ax.set_ylabel(rf'$d={dist}$' + '\nlearning rate', fontsize=9)
                 if ri == 0:
-                    ax.set_title(goal_label, fontsize=10, fontweight='bold')
+                    ax.set_title(rf'$H={h_vals[h_type]}$ ({h_type} horizon)',
+                                 fontsize=10, fontweight='bold')
 
-                # Annotate best combo + budgets in subplot
+                # Best combo annotation
                 best_text = (
                     rf'Best: LR={cal["best_lr"]}, TPU={cal["best_traj_per_update"]}'
                     f'\n'
@@ -305,7 +291,7 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                 )
                 ax.text(0.02, 0.02, best_text,
                         transform=ax.transAxes, ha='left', va='bottom',
-                        fontsize=6, family='monospace',
+                        fontsize=5.5, family='monospace',
                         bbox=dict(boxstyle='round,pad=0.2',
                                   facecolor='white', edgecolor='lightgray',
                                   alpha=0.9))
@@ -314,21 +300,21 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
             fig.subplots_adjust(right=0.88)
             cax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
             cb = fig.colorbar(im, cax=cax)
-            cb.set_label(r'$T_{\mathrm{sat}}$ (observations)', fontsize=9)
+            cb.set_label('Final mean reward', fontsize=9)
 
+        goal_label = '1 goal (zeta sweep)' if ng == 1 else f'{ng} goals (capability sweep)'
         fig.suptitle(
-            rf'Sample-mode calibration — distance $d={dist}$'
+            rf'Sample-mode calibration — {goal_label}'
             '\n'
-            r'Each cell: $T_{\mathrm{sat}}$ (bold) = observations to reach '
-            r'$\geq 0.95$ mean reward; $r$ = final reward at budget cap.'
+            r'Each subplot: final mean reward of vanilla NPG at budget cap '
+            r'(2000 obs) for each (LR $\times$ trajectories/update) combo.'
             '\n'
-            r'Red outline = best (LR, TPU) chosen for sweep. '
-            r'Brighter = faster saturation. '
-            r'Rows: horizon $H$. Columns: number of goals.',
+            r'Red outline = best combo chosen for the sample-mode sweep. '
+            r'Rows: goal distance $d$. Columns: episode horizon $H$.',
             fontsize=11, fontweight='bold')
         plt.tight_layout(rect=[0, 0, 0.88, 0.90])
         save_path = os.path.join(output_dir,
-                                  f'calibration_sample_dist{dist}.png')
+                                  f'calibration_sample_ng{ng}.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print(f"Saved {save_path}")
