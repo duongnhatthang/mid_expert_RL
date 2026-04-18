@@ -30,7 +30,7 @@ N_GOALS_LIST = [1, 3]
 CALIBRATION_PATH = 'results/calibration.json'
 
 # Sample mode calibration parameters
-SAMPLE_LR_VALUES = [2.0, 5.0, 10.0, 20.0, 50.0]
+SAMPLE_LR_VALUES = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
 SAMPLE_TRAJ_PER_UPDATE = [1, 5, 10]
 SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
 
@@ -104,8 +104,14 @@ def calibrate_single(distance, h_type, n_goals, lr, grid_size,
 
 
 def calibrate_sample_single(distance, h_type, n_goals, grid_size,
-                             n_seeds, max_budget, threshold):
-    """Sweep LR x trajectories_per_update for sample mode."""
+                             n_seeds, max_budget, threshold,
+                             existing_combos=None):
+    """Sweep LR x trajectories_per_update for sample mode.
+
+    Args:
+        existing_combos: dict of combo_key -> combo_data from a prior run.
+            If provided, combos already in this dict are skipped (extend mode).
+    """
     goals = generate_equidistant_goals(grid_size, n_goals, distance=distance)
     horizons = compute_exploration_thresholds(grid_size)
     horizon = horizons[f'horizon_{h_type}']
@@ -114,6 +120,10 @@ def calibrate_sample_single(distance, h_type, n_goals, grid_size,
 
     for lr in SAMPLE_LR_VALUES:
         for tpu in SAMPLE_TRAJ_PER_UPDATE:
+            combo_key = f'lr={lr}_tpu={tpu}'
+            if existing_combos and combo_key in existing_combos:
+                combo_results[(lr, tpu)] = existing_combos[combo_key]
+                continue
             sat_steps = []
             final_rewards = []
 
@@ -494,7 +504,7 @@ def _run_sample_calibration(args):
     for i, (dist, h_type, n_goals) in enumerate(configs):
         key = f"dist={dist}_{h_type}_ng={n_goals}_grid={GRID_SIZE}"
 
-        if key in calibration and not args.force:
+        if key in calibration and not args.force and not args.extend:
             existing = calibration[key]
             print(f"  [{i+1}/{total}] {key}: CACHED "
                   f"(lr={existing['best_lr']}, tpu={existing['best_traj_per_update']}, "
@@ -502,10 +512,22 @@ def _run_sample_calibration(args):
                   flush=True)
             continue
 
-        print(f"  [{i+1}/{total}] {key}: calibrating...", flush=True)
+        # In extend mode, pass existing combos so only new LR/TPU values run
+        existing_combos = None
+        if args.extend and key in calibration:
+            existing_combos = calibration[key].get('all_combos', {})
+            n_existing = len(existing_combos)
+            n_total = len(SAMPLE_LR_VALUES) * len(SAMPLE_TRAJ_PER_UPDATE)
+            print(f"  [{i+1}/{total}] {key}: extending "
+                  f"({n_existing} cached, {n_total - n_existing} new)...",
+                  flush=True)
+        else:
+            print(f"  [{i+1}/{total}] {key}: calibrating...", flush=True)
+
         result = calibrate_sample_single(
             dist, h_type, n_goals, GRID_SIZE,
             args.n_seeds, args.max_budget, args.threshold,
+            existing_combos=existing_combos,
         )
         calibration[key] = result
         print(f"    Best: lr={result['best_lr']}, tpu={result['best_traj_per_update']}, "
@@ -539,6 +561,8 @@ def main():
     parser.add_argument('--threshold', type=float, default=0.95)
     parser.add_argument('--force', action='store_true',
                         help='Recalibrate even if entry exists')
+    parser.add_argument('--extend', action='store_true',
+                        help='Keep existing combos, only run new LR/TPU values')
     parser.add_argument('--plot-only', action='store_true',
                         help='Regenerate plots from existing calibration JSON (no re-run)')
     args = parser.parse_args()
