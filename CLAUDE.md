@@ -37,9 +37,10 @@ python run_lr_sweep.py --budget 500 --n-seeds 5
 # Hypothesis sweep (exact NPG, all alpha/budget/horizon/distance combos)
 python run_hypothesis_sweep.py --mode capability --n-seeds 10 --n-workers 4
 
-# Replot from cached results (no re-run), with optional heatmaps/distance_effect
+# Replot from cached results (no re-run). Do NOT pass --all-plots in regular
+# runs — it enables distance_effect_alpha and heatmap_dist figures that are
+# off by default and should stay off unless explicitly requested.
 python run_hypothesis_sweep.py --mode capability --skip-run --output-dir results/capability_sweep/<timestamp>
-python run_hypothesis_sweep.py --mode capability --skip-run --all-plots --output-dir results/capability_sweep/<timestamp>
 
 # Plot existing results from CSV
 python run_experiments.py --mode plot2x2 --output results/exploration_2x2_results.csv
