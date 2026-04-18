@@ -375,7 +375,7 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                                 -0.22, f'[{bstr}]',
                                 ha='center', va='top', fontsize=5.5,
                                 transform=ax.get_xaxis_transform(),
-                                color='gray')
+                                color='#333333')
 
                 ax.grid(True, alpha=0.3, axis='y')
                 if ci == 0:
@@ -392,7 +392,7 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
             r'$T_{\mathrm{sat}}$ = first step/obs where vanilla NPG reaches '
             r'$\geq 0.95$ mean reward.'
             '\n'
-            r'Vertical text = sweep budget breakpoints $[T/5,\;T/3,\;T,\;2T]$. '
+            r'Sweep budget breakpoints $[T/5,\;T/3,\;T,\;2T]$ shown below each bar. '
             r'Rows: distance $d$. Columns: horizon $H$.',
             fontsize=11, fontweight='bold')
         plt.tight_layout(rect=[0, 0, 1, 0.90])
