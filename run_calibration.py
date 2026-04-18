@@ -187,38 +187,141 @@ def calibrate_sample_single(distance, h_type, n_goals, grid_size,
     }
 
 
-def _plot_sample_calibration_curves(cal_result, config_key, output_dir):
-    """Plot learning curves for all LR x traj combos for one config."""
+def _plot_sample_calibration_heatmaps(all_results, output_dir):
+    """Consolidated sample calibration: one (LR × TPU) heatmap per config
+    showing final_reward_mean, plus a summary bar chart of T_sat across configs.
+    """
     import matplotlib.pyplot as plt
-    from matplotlib import cm
 
-    combos = cal_result['all_combos']
-    n_combos = len(combos)
-    colors = cm.tab10(np.linspace(0, 1, max(10, n_combos)))[:n_combos]
+    configs = sorted(all_results.keys())
+    if not configs:
+        return
+    lrs = sorted(SAMPLE_LR_VALUES)
+    tpus = sorted(SAMPLE_TRAJ_PER_UPDATE)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    for i, (combo_key, combo_data) in enumerate(sorted(combos.items())):
-        label = combo_key
-        if combo_data['lr'] == cal_result['best_lr'] and \
-           combo_data['trajectories_per_update'] == cal_result['best_traj_per_update']:
-            label += ' (BEST)'
-        ax.axhline(combo_data['final_reward_mean'], color=colors[i],
-                   linestyle='--', alpha=0.3)
-        ax.plot([], [], color=colors[i], label=f"{label}: final={combo_data['final_reward_mean']:.3f}, "
-                f"T_sat={combo_data['T_sat_max']}")
+    # --- Figure 1: (LR × TPU) heatmaps, one subplot per config ---
+    n_configs = len(configs)
+    n_cols = min(4, n_configs)
+    n_rows = (n_configs + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols,
+                              figsize=(3.5 * n_cols, 3.0 * n_rows + 0.8),
+                              squeeze=False)
+    for idx, key in enumerate(configs):
+        ri, ci = divmod(idx, n_cols)
+        ax = axes[ri, ci]
+        cal = all_results[key]
+        combos = cal['all_combos']
+        grid = np.full((len(lrs), len(tpus)), np.nan)
+        for i, lr in enumerate(lrs):
+            for j, tpu in enumerate(tpus):
+                ck = f'lr={lr}_tpu={tpu}'
+                if ck in combos:
+                    grid[i, j] = combos[ck]['final_reward_mean']
+        im = ax.imshow(grid, aspect='auto', cmap='viridis', vmin=0, vmax=1,
+                        origin='lower')
+        # Annotate cells
+        for i in range(len(lrs)):
+            for j in range(len(tpus)):
+                v = grid[i, j]
+                if np.isnan(v):
+                    continue
+                color = 'white' if v < 0.6 else 'black'
+                ax.text(j, i, f'{v:.2f}', ha='center', va='center',
+                        fontsize=7, color=color)
+                # Highlight best combo
+                if lrs[i] == cal['best_lr'] and tpus[j] == cal['best_traj_per_update']:
+                    ax.add_patch(plt.Rectangle(
+                        (j - 0.5, i - 0.5), 1, 1,
+                        fill=False, edgecolor='red', linewidth=2, zorder=5))
+        ax.set_xticks(range(len(tpus)))
+        ax.set_xticklabels([str(t) for t in tpus], fontsize=7)
+        ax.set_yticks(range(len(lrs)))
+        ax.set_yticklabels([str(l) for l in lrs], fontsize=7)
+        ax.set_xlabel('traj/update', fontsize=8)
+        ax.set_ylabel('LR', fontsize=8)
+        ax.set_title(key.replace('_grid=9', ''), fontsize=8)
 
-    ax.set_xlabel('Observations')
-    ax.set_ylabel('Mean Reward')
-    ax.set_title(f'Sample Calibration: {config_key}\n'
-                 f'Best: lr={cal_result["best_lr"]}, tpu={cal_result["best_traj_per_update"]}, '
-                 f'T_sat={cal_result["T_sat"]}')
-    ax.legend(fontsize=6)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
+    # Hide unused subplots
+    for idx in range(n_configs, n_rows * n_cols):
+        ri, ci = divmod(idx, n_cols)
+        axes[ri, ci].axis('off')
 
-    save_path = os.path.join(output_dir, f'calibration_{config_key}.png')
+    fig.subplots_adjust(right=0.88)
+    cax = fig.add_axes([0.90, 0.15, 0.015, 0.7])
+    fig.colorbar(im, cax=cax, label='Final mean reward')
+    fig.suptitle(
+        r'Sample calibration: final reward by (LR $\times$ trajectories/update)'
+        '\n'
+        r'Red outline = best combo chosen for sweep. '
+        r'Cells show mean reward at budget=2000 obs.',
+        fontsize=11, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 0.88, 0.93])
+    save_path = os.path.join(output_dir, 'calibration_sample_lr_tpu_heatmaps.png')
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
+    print(f"Saved {save_path}")
+
+    # --- Figure 2: T_sat comparison (exact vs sample, grouped by config) ---
+    exact_path = CALIBRATION_PATH
+    exact_cal = {}
+    if os.path.exists(exact_path):
+        with open(exact_path) as f:
+            exact_cal = json.load(f)
+
+    fig2, ax2 = plt.subplots(figsize=(max(12, 0.8 * n_configs), 5))
+    x = np.arange(n_configs)
+    width = 0.35
+
+    sample_tsat = []
+    exact_tsat = []
+    labels = []
+    for key in configs:
+        labels.append(key.replace('_grid=9', ''))
+        sample_tsat.append(all_results[key]['T_sat'])
+        # Find matching exact calibration (exact keys include lr)
+        exact_key = key.replace('_grid=9', f'_lr={LR}_grid=9')
+        exact_tsat.append(exact_cal.get(exact_key, {}).get('T_sat', 0))
+
+    bars_exact = ax2.bar(x - width / 2, exact_tsat, width, label='Exact (update steps)',
+                          color='steelblue', alpha=0.8)
+    bars_sample = ax2.bar(x + width / 2, sample_tsat, width, label='Sample (observations)',
+                           color='coral', alpha=0.8)
+
+    # Annotate bars
+    for bar in bars_exact:
+        h = bar.get_height()
+        if h > 0:
+            ax2.text(bar.get_x() + bar.get_width() / 2, h + 5, str(int(h)),
+                     ha='center', va='bottom', fontsize=7)
+    for bar in bars_sample:
+        h = bar.get_height()
+        if h > 0:
+            ax2.text(bar.get_x() + bar.get_width() / 2, h + 5, str(int(h)),
+                     ha='center', va='bottom', fontsize=7)
+
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(labels, rotation=45, ha='right', fontsize=7)
+    ax2.set_ylabel(r'$T_{\mathrm{sat}}$', fontsize=10)
+    ax2.set_title(
+        r'Saturation budget $T_{\mathrm{sat}}$ — exact vs sample mode'
+        '\n'
+        r'Exact: update steps to reach $\geq 0.95$ mean reward. '
+        r'Sample: observations to reach same threshold.',
+        fontsize=11, fontweight='bold')
+    ax2.legend(fontsize=9)
+    ax2.grid(True, alpha=0.3, axis='y')
+    plt.tight_layout()
+    save_path2 = os.path.join(output_dir, 'calibration_tsat_comparison.png')
+    plt.savefig(save_path2, dpi=150, bbox_inches='tight')
+    plt.close(fig2)
+    print(f"Saved {save_path2}")
+
+
+def _plot_sample_calibration_curves(cal_result, config_key, output_dir):
+    """Legacy per-config plot — kept for backward compat but superseded by
+    _plot_sample_calibration_heatmaps which produces consolidated views.
+    """
+    pass
 
 
 def _run_exact_calibration(args):
@@ -330,6 +433,9 @@ def _run_sample_calibration(args):
     print(f"\nSample calibration saved to {cal_path}", flush=True)
     print(f"Calibration plots saved to {fig_dir}/", flush=True)
 
+    # Consolidated plots across all configs
+    _plot_sample_calibration_heatmaps(calibration, fig_dir)
+
     print("\n--- Summary ---")
     print(f"{'Config':<45} {'LR':>5} {'TPU':>4} {'T_sat':>6} {'Budgets'}")
     for key in sorted(calibration):
@@ -347,9 +453,20 @@ def main():
     parser.add_argument('--threshold', type=float, default=0.95)
     parser.add_argument('--force', action='store_true',
                         help='Recalibrate even if entry exists')
+    parser.add_argument('--plot-only', action='store_true',
+                        help='Regenerate plots from existing calibration JSON (no re-run)')
     args = parser.parse_args()
 
-    if args.mode == 'sample':
+    if args.plot_only:
+        if args.mode == 'sample':
+            with open(SAMPLE_CALIBRATION_PATH) as f:
+                calibration = json.load(f)
+            fig_dir = 'results/calibration_sample_figures'
+            os.makedirs(fig_dir, exist_ok=True)
+            _plot_sample_calibration_heatmaps(calibration, fig_dir)
+        else:
+            print("--plot-only currently only supported for sample mode")
+    elif args.mode == 'sample':
         _run_sample_calibration(args)
     else:
         _run_exact_calibration(args)
