@@ -330,15 +330,19 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
         with open(exact_path) as f:
             exact_cal = json.load(f)
 
-    for ng in N_GOALS_LIST:
-        n_rows = len(DISTANCES)
-        n_cols = len(HORIZON_TYPES)
+    # Single figure: 2×2 grid. Top row = 1 goal (zeta), bottom = 3 goals (cap).
+    # Left col = exact, right col = sample.
+    n_d = len(DISTANCES)
+    n_h = len(HORIZON_TYPES)
+    fig, axes = plt.subplots(len(N_GOALS_LIST), 2,
+                              figsize=(4.5 * 2 + 2.0, 3.0 * len(N_GOALS_LIST) + 2.0),
+                              squeeze=False)
 
-        # Build grids
-        exact_grid = np.full((n_rows, n_cols), np.nan)
-        sample_grid = np.full((n_rows, n_cols), np.nan)
-        exact_budgets = {}
-        sample_budgets = {}
+    for ngi, ng in enumerate(N_GOALS_LIST):
+        exact_grid = np.full((n_d, n_h), np.nan)
+        sample_grid = np.full((n_d, n_h), np.nan)
+        exact_bud = {}
+        sample_bud = {}
         for ri, dist in enumerate(DISTANCES):
             for ci, h_type in enumerate(HORIZON_TYPES):
                 key = f'dist={dist}_{h_type}_ng={ng}_grid={GRID_SIZE}'
@@ -347,23 +351,22 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                 cal = all_results.get(key)
                 if ecal.get('T_sat'):
                     exact_grid[ri, ci] = ecal['T_sat']
-                    exact_budgets[(ri, ci)] = ecal.get('budgets', [])
+                    exact_bud[(ri, ci)] = ecal.get('budgets', [])
                 if cal:
                     sample_grid[ri, ci] = cal['T_sat']
-                    sample_budgets[(ri, ci)] = cal.get('budgets', [])
+                    sample_bud[(ri, ci)] = cal.get('budgets', [])
 
-        fig, (ax_e, ax_s) = plt.subplots(1, 2,
-                                          figsize=(4.5 * 2 + 2.0, 3.0 * n_rows / 2 + 1.5))
+        goal_label = '1 goal (zeta sweep)' if ng == 1 else f'{ng} goals (capability sweep)'
 
-        for ax, grid, budgets_map, label, cmap in [
-            (ax_e, exact_grid, exact_budgets, 'Exact (update steps)', 'YlOrRd'),
-            (ax_s, sample_grid, sample_budgets, 'Sample (observations)', 'YlOrRd'),
-        ]:
+        for mi, (ax, grid, bmap, mode_label) in enumerate([
+            (axes[ngi, 0], exact_grid, exact_bud, 'Exact (update steps)'),
+            (axes[ngi, 1], sample_grid, sample_bud, 'Sample (observations)'),
+        ]):
             vmax = np.nanmax(grid) if not np.all(np.isnan(grid)) else 1
-            im = ax.imshow(grid, aspect='auto', cmap=cmap, vmin=0, vmax=vmax,
-                            origin='upper')
-            for ri in range(n_rows):
-                for ci in range(n_cols):
+            im = ax.imshow(grid, aspect='auto', cmap='YlOrRd', vmin=0,
+                            vmax=vmax, origin='upper')
+            for ri in range(n_d):
+                for ci in range(n_h):
                     v = grid[ri, ci]
                     if np.isnan(v):
                         continue
@@ -371,36 +374,39 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                     ax.text(ci, ri - 0.15, str(int(v)),
                             ha='center', va='center', fontsize=11,
                             fontweight='bold', color=color)
-                    bud = budgets_map.get((ri, ci), [])
+                    bud = bmap.get((ri, ci), [])
                     if bud:
                         bstr = ', '.join(str(b) for b in bud)
                         ax.text(ci, ri + 0.2, f'[{bstr}]',
                                 ha='center', va='center', fontsize=6,
                                 color=color, alpha=0.85)
 
-            ax.set_xticks(range(n_cols))
+            ax.set_xticks(range(n_h))
             ax.set_xticklabels([rf'$H={h_vals[h]}$ ({h})' for h in HORIZON_TYPES],
-                               fontsize=9)
-            ax.set_yticks(range(n_rows))
+                               fontsize=8)
+            ax.set_yticks(range(n_d))
             ax.set_yticklabels([rf'$d={d}$' for d in DISTANCES], fontsize=9)
-            ax.set_title(label, fontsize=11, fontweight='bold')
-            fig.colorbar(im, ax=ax, shrink=0.8, label=r'$T_{\mathrm{sat}}$')
+            if ngi == 0:
+                ax.set_title(mode_label, fontsize=11, fontweight='bold')
+            if mi == 0:
+                ax.set_ylabel(goal_label + '\n', fontsize=10, fontweight='bold')
+            fig.colorbar(im, ax=ax, shrink=0.8, label=r'$T_{\mathrm{sat}}$',
+                         pad=0.02)
 
-        goal_label = '1 goal (zeta sweep)' if ng == 1 else f'{ng} goals (capability sweep)'
-        fig.suptitle(
-            rf'$T_{{\mathrm{{sat}}}}$ — {goal_label}'
-            '\n'
-            r'$T_{\mathrm{sat}}$ = first step/obs where vanilla NPG reaches '
-            r'$\geq 0.95$ mean reward.'
-            '\n'
-            r'Small text = sweep budget breakpoints $[T/5,\;T/3,\;T,\;2T]$. '
-            r'Rows: distance $d$. Columns: horizon $H$.',
-            fontsize=11, fontweight='bold')
-        plt.tight_layout(rect=[0, 0, 1, 0.88])
-        save_path = os.path.join(output_dir, f'calibration_tsat_ng{ng}.png')
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        plt.close(fig)
-        print(f"Saved {save_path}")
+    fig.suptitle(
+        r'Vanilla NPG saturation budget $T_{\mathrm{sat}}$ — exact vs sample'
+        '\n'
+        r'$T_{\mathrm{sat}}$ = first step/obs where vanilla NPG ($\alpha=0$, '
+        r'no teacher) reaches $\geq 0.95$ mean reward.'
+        '\n'
+        r'Small text = sweep budget breakpoints $[T/5,\;T/3,\;T,\;2T]$. '
+        r'Rows: goal distance $d$. Columns: horizon $H$.',
+        fontsize=11, fontweight='bold')
+    plt.tight_layout(rect=[0, 0, 1, 0.86])
+    save_path = os.path.join(output_dir, 'calibration_tsat.png')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved {save_path}")
 
 
 def _plot_sample_calibration_curves(cal_result, config_key, output_dir):
