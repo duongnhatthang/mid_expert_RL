@@ -30,7 +30,7 @@ N_GOALS_LIST = [1, 3]
 CALIBRATION_PATH = 'results/calibration.json'
 
 # Sample mode calibration parameters
-SAMPLE_LR_VALUES = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
+SAMPLE_LR_VALUES = [2.0, 5.0, 10.0, 20.0, 50.0]
 SAMPLE_TRAJ_PER_UPDATE = [1, 5, 10]
 SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
 
