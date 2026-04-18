@@ -371,15 +371,9 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                     if np.isnan(v):
                         continue
                     color = 'black' if v < vmax * 0.7 else 'white'
-                    ax.text(ci, ri - 0.15, str(int(v)),
-                            ha='center', va='center', fontsize=11,
+                    ax.text(ci, ri, str(int(v)),
+                            ha='center', va='center', fontsize=12,
                             fontweight='bold', color=color)
-                    bud = bmap.get((ri, ci), [])
-                    if bud:
-                        bstr = ', '.join(str(b) for b in bud)
-                        ax.text(ci, ri + 0.2, f'[{bstr}]',
-                                ha='center', va='center', fontsize=6,
-                                color=color, alpha=0.85)
 
             ax.set_xticks(range(n_h))
             ax.set_xticklabels([rf'$H={h_vals[h]}$ ({h})' for h in HORIZON_TYPES],
@@ -399,8 +393,8 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
         r'$T_{\mathrm{sat}}$ = first step/obs where vanilla NPG ($\alpha=0$, '
         r'no teacher) reaches $\geq 0.95$ mean reward.'
         '\n'
-        r'Small text = sweep budget breakpoints $[T/5,\;T/3,\;T,\;2T]$. '
-        r'Rows: goal distance $d$. Columns: horizon $H$.',
+        r'Rows: goal distance $d$. Columns: horizon $H$. '
+        r'Sweep uses budget breakpoints $[T/5,\;T/3,\;T,\;2T]$.',
         fontsize=11, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.86])
     save_path = os.path.join(output_dir, 'calibration_tsat.png')
