@@ -30,7 +30,7 @@ N_GOALS_LIST = [1, 3]
 CALIBRATION_PATH = 'results/calibration.json'
 
 # Sample mode calibration parameters
-SAMPLE_LR_VALUES = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]
+SAMPLE_LR_VALUES = [0.1, 0.5, 1.0, 2.0, 5.0]
 SAMPLE_TRAJ_PER_UPDATE = [1, 5, 10]
 SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
 
@@ -349,28 +349,33 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                 st = cal['T_sat'] if cal else 0
                 sb = cal['budgets'] if cal else []
 
+                # Use log scale so exact bars (small) are visible alongside
+                # sample bars (large). Set floor at 1 for log safety.
                 x = np.array([0, 1])
-                bars = ax.bar(x, [et, st], color=['steelblue', 'coral'],
+                bars = ax.bar(x, [max(et, 1), max(st, 1)],
+                              color=['steelblue', 'coral'],
                               alpha=0.8, width=0.6)
+                ax.set_yscale('log')
                 ax.set_xticks(x)
                 ax.set_xticklabels(['Exact\n(updates)', 'Sample\n(obs)'],
                                    fontsize=8)
 
-                # Annotate T_sat + budgets on each bar
+                # Annotate T_sat above bar, budgets below the label
                 for bi, (bar, tsat, budgets) in enumerate(
                         zip(bars, [et, st], [eb, sb])):
                     h = bar.get_height()
                     if h > 0:
-                        ax.text(bar.get_x() + bar.get_width() / 2, h,
+                        ax.text(bar.get_x() + bar.get_width() / 2, h * 1.1,
                                 str(int(h)),
                                 ha='center', va='bottom', fontsize=9,
                                 fontweight='bold')
-                        if budgets:
-                            bstr = ', '.join(str(b) for b in budgets)
-                            ax.text(bar.get_x() + bar.get_width() / 2,
-                                    h * 0.5, f'[{bstr}]',
-                                    ha='center', va='center', fontsize=6,
-                                    rotation=90, color='white')
+                    if budgets:
+                        bstr = ', '.join(str(b) for b in budgets)
+                        ax.text(bar.get_x() + bar.get_width() / 2,
+                                -0.22, f'[{bstr}]',
+                                ha='center', va='top', fontsize=5.5,
+                                transform=ax.get_xaxis_transform(),
+                                color='gray')
 
                 ax.grid(True, alpha=0.3, axis='y')
                 if ci == 0:
