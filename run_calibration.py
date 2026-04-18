@@ -187,9 +187,30 @@ def calibrate_sample_single(distance, h_type, n_goals, grid_size,
     }
 
 
+def _human_config_label(key):
+    """Convert 'dist=4_small_ng=1_grid=9' into a readable label."""
+    parts = {}
+    for token in key.split('_'):
+        if '=' in token:
+            k, v = token.split('=', 1)
+            parts[k] = v
+        elif token in ('small', 'large'):
+            parts['horizon'] = token
+    dist = parts.get('dist', '?')
+    h = parts.get('horizon', '?')
+    ng = parts.get('ng', '?')
+    horizons = compute_exploration_thresholds(GRID_SIZE)
+    h_val = horizons.get(f'horizon_{h}', '?')
+    goal_label = f'{ng} goal' if ng == '1' else f'{ng} goals'
+    return f'd={dist}, H={h_val} ({h}), {goal_label}'
+
+
 def _plot_sample_calibration_heatmaps(all_results, output_dir):
-    """Consolidated sample calibration: one (LR × TPU) heatmap per config
-    showing final_reward_mean, plus a summary bar chart of T_sat across configs.
+    """Consolidated sample calibration figures:
+
+    1. (LR × TPU) heatmaps showing T_sat per combo (one subplot per config).
+    2. T_sat comparison bar chart: exact vs sample across all configs, with
+       the derived sweep budget breakpoints annotated.
     """
     import matplotlib.pyplot as plt
 
@@ -199,67 +220,118 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
     lrs = sorted(SAMPLE_LR_VALUES)
     tpus = sorted(SAMPLE_TRAJ_PER_UPDATE)
 
-    # --- Figure 1: (LR × TPU) heatmaps, one subplot per config ---
-    n_configs = len(configs)
-    n_cols = min(4, n_configs)
-    n_rows = (n_configs + n_cols - 1) // n_cols
-    fig, axes = plt.subplots(n_rows, n_cols,
-                              figsize=(3.5 * n_cols, 3.0 * n_rows + 0.8),
-                              squeeze=False)
-    for idx, key in enumerate(configs):
-        ri, ci = divmod(idx, n_cols)
-        ax = axes[ri, ci]
-        cal = all_results[key]
-        combos = cal['all_combos']
-        grid = np.full((len(lrs), len(tpus)), np.nan)
-        for i, lr in enumerate(lrs):
-            for j, tpu in enumerate(tpus):
-                ck = f'lr={lr}_tpu={tpu}'
-                if ck in combos:
-                    grid[i, j] = combos[ck]['final_reward_mean']
-        im = ax.imshow(grid, aspect='auto', cmap='viridis', vmin=0, vmax=1,
-                        origin='lower')
-        # Annotate cells
-        for i in range(len(lrs)):
-            for j in range(len(tpus)):
-                v = grid[i, j]
-                if np.isnan(v):
+    # --- Figure 1: one figure PER DISTANCE, organized like sweep results ---
+    # Each figure: rows = horizon (small, large), cols = n_goals (1, 3).
+    # Each subplot = (LR × TPU) heatmap of T_sat.
+    horizons = compute_exploration_thresholds(GRID_SIZE)
+    h_vals = {'small': horizons['horizon_small'], 'large': horizons['horizon_large']}
+
+    # Global max T_sat for shared colour scale across all figures
+    max_tsat = 0
+    for key in configs:
+        for combo_data in all_results[key]['all_combos'].values():
+            max_tsat = max(max_tsat, combo_data['T_sat_max'])
+    if max_tsat == 0:
+        max_tsat = 2000
+
+    for dist in DISTANCES:
+        fig, axes = plt.subplots(len(HORIZON_TYPES), len(N_GOALS_LIST),
+                                  figsize=(4.0 * len(N_GOALS_LIST) + 1.5,
+                                           3.5 * len(HORIZON_TYPES) + 2.0),
+                                  squeeze=False)
+        im = None
+        for ri, h_type in enumerate(HORIZON_TYPES):
+            for ci, ng in enumerate(N_GOALS_LIST):
+                ax = axes[ri, ci]
+                key = f'dist={dist}_{h_type}_ng={ng}_grid={GRID_SIZE}'
+                cal = all_results.get(key)
+                if cal is None:
+                    ax.text(0.5, 0.5, 'No data', ha='center', va='center',
+                            transform=ax.transAxes, fontsize=10, color='gray')
+                    ax.axis('off')
                     continue
-                color = 'white' if v < 0.6 else 'black'
-                ax.text(j, i, f'{v:.2f}', ha='center', va='center',
-                        fontsize=7, color=color)
-                # Highlight best combo
-                if lrs[i] == cal['best_lr'] and tpus[j] == cal['best_traj_per_update']:
-                    ax.add_patch(plt.Rectangle(
-                        (j - 0.5, i - 0.5), 1, 1,
-                        fill=False, edgecolor='red', linewidth=2, zorder=5))
-        ax.set_xticks(range(len(tpus)))
-        ax.set_xticklabels([str(t) for t in tpus], fontsize=7)
-        ax.set_yticks(range(len(lrs)))
-        ax.set_yticklabels([str(l) for l in lrs], fontsize=7)
-        ax.set_xlabel('traj/update', fontsize=8)
-        ax.set_ylabel('LR', fontsize=8)
-        ax.set_title(key.replace('_grid=9', ''), fontsize=8)
 
-    # Hide unused subplots
-    for idx in range(n_configs, n_rows * n_cols):
-        ri, ci = divmod(idx, n_cols)
-        axes[ri, ci].axis('off')
+                combos = cal['all_combos']
+                grid_tsat = np.full((len(lrs), len(tpus)), np.nan)
+                grid_reward = np.full((len(lrs), len(tpus)), np.nan)
+                for i, lr in enumerate(lrs):
+                    for j, tpu in enumerate(tpus):
+                        ck = f'lr={lr}_tpu={tpu}'
+                        if ck in combos:
+                            grid_tsat[i, j] = combos[ck]['T_sat_max']
+                            grid_reward[i, j] = combos[ck]['final_reward_mean']
 
-    fig.subplots_adjust(right=0.88)
-    cax = fig.add_axes([0.90, 0.15, 0.015, 0.7])
-    fig.colorbar(im, cax=cax, label='Final mean reward')
-    fig.suptitle(
-        r'Sample calibration: final reward by (LR $\times$ trajectories/update)'
-        '\n'
-        r'Red outline = best combo chosen for sweep. '
-        r'Cells show mean reward at budget=2000 obs.',
-        fontsize=11, fontweight='bold')
-    plt.tight_layout(rect=[0, 0, 0.88, 0.93])
-    save_path = os.path.join(output_dir, 'calibration_sample_lr_tpu_heatmaps.png')
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    print(f"Saved {save_path}")
+                im = ax.imshow(grid_tsat, aspect='auto', cmap='viridis_r',
+                                vmin=0, vmax=max_tsat, origin='lower')
+
+                for i in range(len(lrs)):
+                    for j in range(len(tpus)):
+                        ts = grid_tsat[i, j]
+                        rw = grid_reward[i, j]
+                        if np.isnan(ts):
+                            continue
+                        color = 'white' if ts > max_tsat * 0.5 else 'black'
+                        ax.text(j, i - 0.12, f'{int(ts)}',
+                                ha='center', va='center', fontsize=7,
+                                fontweight='bold', color=color)
+                        if not np.isnan(rw):
+                            ax.text(j, i + 0.22, f'r={rw:.2f}',
+                                    ha='center', va='center', fontsize=6,
+                                    color=color)
+                        if lrs[i] == cal['best_lr'] and tpus[j] == cal['best_traj_per_update']:
+                            ax.add_patch(plt.Rectangle(
+                                (j - 0.5, i - 0.5), 1, 1,
+                                fill=False, edgecolor='red', linewidth=2, zorder=5))
+
+                ax.set_xticks(range(len(tpus)))
+                ax.set_xticklabels([str(t) for t in tpus], fontsize=7)
+                ax.set_yticks(range(len(lrs)))
+                ax.set_yticklabels([str(l) for l in lrs], fontsize=7)
+                if ri == len(HORIZON_TYPES) - 1:
+                    ax.set_xlabel('trajectories / update', fontsize=9)
+                if ci == 0:
+                    ax.set_ylabel(f'H={h_vals[h_type]} ({h_type})\nlearning rate',
+                                  fontsize=9)
+                goal_label = '1 goal (zeta sweep)' if ng == 1 else f'{ng} goals (capability sweep)'
+                if ri == 0:
+                    ax.set_title(goal_label, fontsize=10, fontweight='bold')
+
+                # Annotate best combo + budgets in subplot
+                best_text = (
+                    rf'Best: LR={cal["best_lr"]}, TPU={cal["best_traj_per_update"]}'
+                    f'\n'
+                    rf'$T_{{\mathrm{{sat}}}}$={cal["T_sat"]}, '
+                    f'budgets={cal["budgets"]}'
+                )
+                ax.text(0.02, 0.02, best_text,
+                        transform=ax.transAxes, ha='left', va='bottom',
+                        fontsize=6, family='monospace',
+                        bbox=dict(boxstyle='round,pad=0.2',
+                                  facecolor='white', edgecolor='lightgray',
+                                  alpha=0.9))
+
+        if im is not None:
+            fig.subplots_adjust(right=0.88)
+            cax = fig.add_axes([0.91, 0.15, 0.015, 0.7])
+            cb = fig.colorbar(im, cax=cax)
+            cb.set_label(r'$T_{\mathrm{sat}}$ (observations)', fontsize=9)
+
+        fig.suptitle(
+            rf'Sample-mode calibration — distance $d={dist}$'
+            '\n'
+            r'Each cell: $T_{\mathrm{sat}}$ (bold) = observations to reach '
+            r'$\geq 0.95$ mean reward; $r$ = final reward at budget cap.'
+            '\n'
+            r'Red outline = best (LR, TPU) chosen for sweep. '
+            r'Brighter = faster saturation. '
+            r'Rows: horizon $H$. Columns: number of goals.',
+            fontsize=11, fontweight='bold')
+        plt.tight_layout(rect=[0, 0, 0.88, 0.90])
+        save_path = os.path.join(output_dir,
+                                  f'calibration_sample_dist{dist}.png')
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Saved {save_path}")
 
     # --- Figure 2: T_sat comparison (exact vs sample, grouped by config) ---
     exact_path = CALIBRATION_PATH
@@ -268,46 +340,104 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
         with open(exact_path) as f:
             exact_cal = json.load(f)
 
-    fig2, ax2 = plt.subplots(figsize=(max(12, 0.8 * n_configs), 5))
-    x = np.arange(n_configs)
+    # Group by distance with visual separators
+    groups = {}  # dist -> [(label, exact_tsat, sample_tsat, exact_budgets, sample_budgets)]
+    for key in configs:
+        cal = all_results[key]
+        exact_key = key.replace('_grid=9', f'_lr={LR}_grid=9')
+        ecal = exact_cal.get(exact_key, {})
+        # Parse distance from key
+        dist = int(key.split('_')[0].split('=')[1])
+        groups.setdefault(dist, []).append((
+            _human_config_label(key),
+            ecal.get('T_sat', 0),
+            cal['T_sat'],
+            ecal.get('budgets', []),
+            cal['budgets'],
+        ))
+
+    # Flatten with gaps between distance groups
+    labels, exact_vals, sample_vals = [], [], []
+    exact_bud, sample_bud = [], []
+    group_boundaries = []  # x positions where vertical separators go
+    pos = 0
+    for di, dist in enumerate(sorted(groups)):
+        if di > 0:
+            pos += 0.8  # gap between groups
+            group_boundaries.append(pos - 0.4)
+        for label, et, st, eb, sb in groups[dist]:
+            labels.append(label)
+            exact_vals.append(et)
+            sample_vals.append(st)
+            exact_bud.append(eb)
+            sample_bud.append(sb)
+            pos += 1
+
+    x = np.arange(len(labels))
+    # Shift x positions to include gaps
+    x_pos = []
+    pos = 0
+    gi = 0
+    for i in range(len(labels)):
+        if gi < len(group_boundaries) and pos >= group_boundaries[gi]:
+            pos += 0.8
+            gi += 1
+        x_pos.append(pos)
+        pos += 1
+    x_pos = np.array(x_pos)
+
+    fig2, ax2 = plt.subplots(figsize=(max(14, 0.9 * len(labels)), 6))
     width = 0.35
 
-    sample_tsat = []
-    exact_tsat = []
-    labels = []
-    for key in configs:
-        labels.append(key.replace('_grid=9', ''))
-        sample_tsat.append(all_results[key]['T_sat'])
-        # Find matching exact calibration (exact keys include lr)
-        exact_key = key.replace('_grid=9', f'_lr={LR}_grid=9')
-        exact_tsat.append(exact_cal.get(exact_key, {}).get('T_sat', 0))
-
-    bars_exact = ax2.bar(x - width / 2, exact_tsat, width, label='Exact (update steps)',
+    bars_exact = ax2.bar(x_pos - width / 2, exact_vals, width,
+                          label='Exact (update steps)',
                           color='steelblue', alpha=0.8)
-    bars_sample = ax2.bar(x + width / 2, sample_tsat, width, label='Sample (observations)',
+    bars_sample = ax2.bar(x_pos + width / 2, sample_vals, width,
+                           label='Sample (observations)',
                            color='coral', alpha=0.8)
 
-    # Annotate bars
-    for bar in bars_exact:
+    for i, bar in enumerate(bars_exact):
         h = bar.get_height()
         if h > 0:
-            ax2.text(bar.get_x() + bar.get_width() / 2, h + 5, str(int(h)),
-                     ha='center', va='bottom', fontsize=7)
-    for bar in bars_sample:
+            ax2.text(bar.get_x() + bar.get_width() / 2, h + 8,
+                     str(int(h)),
+                     ha='center', va='bottom', fontsize=7, fontweight='bold')
+            if exact_bud[i]:
+                bstr = ','.join(str(b) for b in exact_bud[i])
+                ax2.text(bar.get_x() + bar.get_width() / 2, h * 0.5,
+                         bstr, ha='center', va='center', fontsize=5,
+                         rotation=90, color='white', alpha=0.9)
+    for i, bar in enumerate(bars_sample):
         h = bar.get_height()
         if h > 0:
-            ax2.text(bar.get_x() + bar.get_width() / 2, h + 5, str(int(h)),
-                     ha='center', va='bottom', fontsize=7)
+            ax2.text(bar.get_x() + bar.get_width() / 2, h + 8,
+                     str(int(h)),
+                     ha='center', va='bottom', fontsize=7, fontweight='bold')
+            if sample_bud[i]:
+                bstr = ','.join(str(b) for b in sample_bud[i])
+                ax2.text(bar.get_x() + bar.get_width() / 2, h * 0.5,
+                         bstr, ha='center', va='center', fontsize=5,
+                         rotation=90, color='white', alpha=0.9)
 
-    ax2.set_xticks(x)
+    # Distance group separators and labels
+    for bx in group_boundaries:
+        ax2.axvline(bx, color='gray', linewidth=1.0, linestyle='--', alpha=0.5)
+
+    ax2.set_xticks(x_pos)
     ax2.set_xticklabels(labels, rotation=45, ha='right', fontsize=7)
     ax2.set_ylabel(r'$T_{\mathrm{sat}}$', fontsize=10)
     ax2.set_title(
         r'Saturation budget $T_{\mathrm{sat}}$ — exact vs sample mode'
         '\n'
-        r'Exact: update steps to reach $\geq 0.95$ mean reward. '
-        r'Sample: observations to reach same threshold.',
-        fontsize=11, fontweight='bold')
+        r'$T_{\mathrm{sat}}$ = first step/obs where vanilla NPG reaches '
+        r'$\geq 0.95$ mean reward. Bold = $T_{\mathrm{sat}}$; '
+        r'vertical text = sweep budget breakpoints '
+        r'$[T/5,\;T/3,\;T,\;2T]$.'
+        '\n'
+        r'Grouped by goal distance $d$. '
+        r'$H$ = episode horizon (small=8 / large=36 for 9$\times$9 grid). '
+        r'Goals = number of reward states.',
+        fontsize=10, fontweight='bold')
     ax2.legend(fontsize=9)
     ax2.grid(True, alpha=0.3, axis='y')
     plt.tight_layout()
