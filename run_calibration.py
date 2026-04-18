@@ -30,8 +30,8 @@ N_GOALS_LIST = [1, 3]
 CALIBRATION_PATH = 'results/calibration.json'
 
 # Sample mode calibration parameters
-SAMPLE_LR_VALUES = [0.01, 0.05, 0.1, 0.5, 1.0]
-SAMPLE_TRAJ_PER_UPDATE = [1, 5, 10, 20]
+SAMPLE_LR_VALUES = [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]
+SAMPLE_TRAJ_PER_UPDATE = [1, 5, 10]
 SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
 
 
@@ -320,118 +320,81 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
         plt.close(fig)
         print(f"Saved {save_path}")
 
-    # --- Figure 2: T_sat comparison (exact vs sample, grouped by config) ---
+    # --- Figure 2: T_sat comparison (exact vs sample) ---
+    # One figure per n_goals, rows=distance, cols=horizon — matching the
+    # heatmap layout. Each subplot is a side-by-side bar of exact vs sample
+    # T_sat with budget breakpoints annotated.
     exact_path = CALIBRATION_PATH
     exact_cal = {}
     if os.path.exists(exact_path):
         with open(exact_path) as f:
             exact_cal = json.load(f)
 
-    # Group by distance with visual separators
-    groups = {}  # dist -> [(label, exact_tsat, sample_tsat, exact_budgets, sample_budgets)]
-    for key in configs:
-        cal = all_results[key]
-        exact_key = key.replace('_grid=9', f'_lr={LR}_grid=9')
-        ecal = exact_cal.get(exact_key, {})
-        # Parse distance from key
-        dist = int(key.split('_')[0].split('=')[1])
-        groups.setdefault(dist, []).append((
-            _human_config_label(key),
-            ecal.get('T_sat', 0),
-            cal['T_sat'],
-            ecal.get('budgets', []),
-            cal['budgets'],
-        ))
+    for ng in N_GOALS_LIST:
+        n_rows = len(DISTANCES)
+        n_cols = len(HORIZON_TYPES)
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                  figsize=(5.0 * n_cols, 2.5 * n_rows + 2.0),
+                                  squeeze=False)
+        for ri, dist in enumerate(DISTANCES):
+            for ci, h_type in enumerate(HORIZON_TYPES):
+                ax = axes[ri, ci]
+                key = f'dist={dist}_{h_type}_ng={ng}_grid={GRID_SIZE}'
+                cal = all_results.get(key)
+                exact_key = key.replace('_grid=9', f'_lr={LR}_grid=9')
+                ecal = exact_cal.get(exact_key, {})
 
-    # Flatten with gaps between distance groups
-    labels, exact_vals, sample_vals = [], [], []
-    exact_bud, sample_bud = [], []
-    group_boundaries = []  # x positions where vertical separators go
-    pos = 0
-    for di, dist in enumerate(sorted(groups)):
-        if di > 0:
-            pos += 0.8  # gap between groups
-            group_boundaries.append(pos - 0.4)
-        for label, et, st, eb, sb in groups[dist]:
-            labels.append(label)
-            exact_vals.append(et)
-            sample_vals.append(st)
-            exact_bud.append(eb)
-            sample_bud.append(sb)
-            pos += 1
+                et = ecal.get('T_sat', 0)
+                eb = ecal.get('budgets', [])
+                st = cal['T_sat'] if cal else 0
+                sb = cal['budgets'] if cal else []
 
-    x = np.arange(len(labels))
-    # Shift x positions to include gaps
-    x_pos = []
-    pos = 0
-    gi = 0
-    for i in range(len(labels)):
-        if gi < len(group_boundaries) and pos >= group_boundaries[gi]:
-            pos += 0.8
-            gi += 1
-        x_pos.append(pos)
-        pos += 1
-    x_pos = np.array(x_pos)
+                x = np.array([0, 1])
+                bars = ax.bar(x, [et, st], color=['steelblue', 'coral'],
+                              alpha=0.8, width=0.6)
+                ax.set_xticks(x)
+                ax.set_xticklabels(['Exact\n(updates)', 'Sample\n(obs)'],
+                                   fontsize=8)
 
-    fig2, ax2 = plt.subplots(figsize=(max(14, 0.9 * len(labels)), 6))
-    width = 0.35
+                # Annotate T_sat + budgets on each bar
+                for bi, (bar, tsat, budgets) in enumerate(
+                        zip(bars, [et, st], [eb, sb])):
+                    h = bar.get_height()
+                    if h > 0:
+                        ax.text(bar.get_x() + bar.get_width() / 2, h,
+                                str(int(h)),
+                                ha='center', va='bottom', fontsize=9,
+                                fontweight='bold')
+                        if budgets:
+                            bstr = ', '.join(str(b) for b in budgets)
+                            ax.text(bar.get_x() + bar.get_width() / 2,
+                                    h * 0.5, f'[{bstr}]',
+                                    ha='center', va='center', fontsize=6,
+                                    rotation=90, color='white')
 
-    bars_exact = ax2.bar(x_pos - width / 2, exact_vals, width,
-                          label='Exact (update steps)',
-                          color='steelblue', alpha=0.8)
-    bars_sample = ax2.bar(x_pos + width / 2, sample_vals, width,
-                           label='Sample (observations)',
-                           color='coral', alpha=0.8)
+                ax.grid(True, alpha=0.3, axis='y')
+                if ci == 0:
+                    ax.set_ylabel(rf'$d={dist}$' + '\n' + r'$T_{\mathrm{sat}}$',
+                                  fontsize=9)
+                if ri == 0:
+                    ax.set_title(rf'$H={h_vals[h_type]}$ ({h_type})',
+                                 fontsize=10, fontweight='bold')
 
-    for i, bar in enumerate(bars_exact):
-        h = bar.get_height()
-        if h > 0:
-            ax2.text(bar.get_x() + bar.get_width() / 2, h + 8,
-                     str(int(h)),
-                     ha='center', va='bottom', fontsize=7, fontweight='bold')
-            if exact_bud[i]:
-                bstr = ','.join(str(b) for b in exact_bud[i])
-                ax2.text(bar.get_x() + bar.get_width() / 2, h * 0.5,
-                         bstr, ha='center', va='center', fontsize=5,
-                         rotation=90, color='white', alpha=0.9)
-    for i, bar in enumerate(bars_sample):
-        h = bar.get_height()
-        if h > 0:
-            ax2.text(bar.get_x() + bar.get_width() / 2, h + 8,
-                     str(int(h)),
-                     ha='center', va='bottom', fontsize=7, fontweight='bold')
-            if sample_bud[i]:
-                bstr = ','.join(str(b) for b in sample_bud[i])
-                ax2.text(bar.get_x() + bar.get_width() / 2, h * 0.5,
-                         bstr, ha='center', va='center', fontsize=5,
-                         rotation=90, color='white', alpha=0.9)
-
-    # Distance group separators and labels
-    for bx in group_boundaries:
-        ax2.axvline(bx, color='gray', linewidth=1.0, linestyle='--', alpha=0.5)
-
-    ax2.set_xticks(x_pos)
-    ax2.set_xticklabels(labels, rotation=45, ha='right', fontsize=7)
-    ax2.set_ylabel(r'$T_{\mathrm{sat}}$', fontsize=10)
-    ax2.set_title(
-        r'Saturation budget $T_{\mathrm{sat}}$ — exact vs sample mode'
-        '\n'
-        r'$T_{\mathrm{sat}}$ = first step/obs where vanilla NPG reaches '
-        r'$\geq 0.95$ mean reward. Bold = $T_{\mathrm{sat}}$; '
-        r'vertical text = sweep budget breakpoints '
-        r'$[T/5,\;T/3,\;T,\;2T]$.'
-        '\n'
-        r'Grouped by goal distance $d$. '
-        r'$H$ = episode horizon (small=8 / large=36 for 9$\times$9 grid). '
-        r'Goals = number of reward states.',
-        fontsize=10, fontweight='bold')
-    ax2.legend(fontsize=9)
-    ax2.grid(True, alpha=0.3, axis='y')
-    plt.tight_layout()
-    save_path2 = os.path.join(output_dir, 'calibration_tsat_comparison.png')
-    plt.savefig(save_path2, dpi=150, bbox_inches='tight')
-    plt.close(fig2)
-    print(f"Saved {save_path2}")
+        goal_label = '1 goal (zeta sweep)' if ng == 1 else f'{ng} goals (capability sweep)'
+        fig.suptitle(
+            rf'$T_{{\mathrm{{sat}}}}$ comparison: exact vs sample — {goal_label}'
+            '\n'
+            r'$T_{\mathrm{sat}}$ = first step/obs where vanilla NPG reaches '
+            r'$\geq 0.95$ mean reward.'
+            '\n'
+            r'Vertical text = sweep budget breakpoints $[T/5,\;T/3,\;T,\;2T]$. '
+            r'Rows: distance $d$. Columns: horizon $H$.',
+            fontsize=11, fontweight='bold')
+        plt.tight_layout(rect=[0, 0, 1, 0.90])
+        save_path = os.path.join(output_dir, f'calibration_tsat_ng{ng}.png')
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Saved {save_path}")
 
 
 def _plot_sample_calibration_curves(cal_result, config_key, output_dir):
