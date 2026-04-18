@@ -37,7 +37,7 @@ from tabular_prototype.environment import generate_equidistant_goals
 # =========================================================================
 
 GRID_SIZE = 9
-DISTANCES = [4, 6, 7, 8]
+DISTANCES = [4, 6, 8]  # 3 values per sweep (standard)
 
 # Zeta mode: 1 goal per distance
 ZETA_GOAL_POSITIONS = {
@@ -57,7 +57,7 @@ CAP_ZETA_GOAL_POSITIONS = CAP_GOAL_POSITIONS  # reuse capability mode goals
 CAP_ZETA_CAPACITIES = [0, 1, 2, 3]
 CAP_ZETA_ZETAS = [0.25, 0.5, 0.75, 1.0]
 
-ALPHA_VALUES = [0.0, 0.1, 0.25, 0.5, 0.75, 1.0]
+ALPHA_VALUES = [0.0, 0.33, 0.67, 1.0]
 
 HORIZON_TYPES = ['small', 'large']
 
@@ -980,18 +980,27 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
             tv_strs = [f'cap={c}_z={z}' for c in caps for z in zetas]
             teacher_advantages = _compute_teacher_advantages(
                 'cap_zeta', tv_strs, env, goals, gamma)
-            adv_grids_full = {}
-            vmax_adv = 0
+            # Store raw A matrices for per-action compass-rose rendering, plus
+            # per-state action-variance grids. Both share color scales over the
+            # whole figure (all (c, ζ) pairs).
+            A_full = {}
+            var_full = {}
+            vabs_adv = 0.0
+            vmax_var = 0.0
             for c in caps:
                 for z in zetas:
                     A = teacher_advantages.get(f'cap={c}_z={z}')
                     if A is None:
                         continue
-                    g = A.max(axis=1).reshape(env.grid_size, env.grid_size)
-                    adv_grids_full[(c, z)] = g
-                    vmax_adv = max(vmax_adv, np.abs(g).max())
-            if vmax_adv == 0:
-                vmax_adv = 1
+                    A_full[(c, z)] = A
+                    vabs_adv = max(vabs_adv, float(np.abs(A).max()))
+                    vg = _variance_grid(A, env)
+                    var_full[(c, z)] = vg
+                    vmax_var = max(vmax_var, float(vg.max()))
+            if vabs_adv == 0:
+                vabs_adv = 1.0
+            if vmax_var == 0:
+                vmax_var = 1.0
 
             # Collect groups: (budget, cap, zeta, alpha) -> list of visitations
             raw_groups = defaultdict(list)
@@ -1056,8 +1065,8 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                 n_cap = len(caps)
                 n_zeta = len(zetas)
                 n_budget = len(budget_vals)
-                # Two side-by-side heatmaps per (cap, ζ) cell: visitation | advantage
-                n_cols = 2 * n_zeta
+                # Triple per (cap, ζ) cell: visitation | per-action advantage | variance
+                n_cols = 3 * n_zeta
                 n_rows = n_budget * n_cap
 
                 cell_size = 1.0
@@ -1069,16 +1078,18 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
 
                 vis_mappables = {}  # budget -> im
                 adv_mappable = None
+                var_mappable = None
 
                 for bi, budget in enumerate(budget_vals):
                     vmax_vis = vmax_vis_per_budget.get(budget, 0) or 1
                     for ci, c in enumerate(caps):
                         global_row = bi * n_cap + ci
                         for zi, z in enumerate(zetas):
-                            vis_col = 2 * zi
-                            adv_col = 2 * zi + 1
+                            vis_col = 3 * zi
+                            adv_col = 3 * zi + 1
+                            var_col = 3 * zi + 2
 
-                            # Left: visitation heatmap
+                            # Visitation
                             ax_v = axes[global_row, vis_col]
                             grid = vis_grids.get((budget, c, z))
                             if grid is not None:
@@ -1091,13 +1102,13 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                             ax_v.set_xticks([])
                             ax_v.set_yticks([])
 
-                            # Right: advantage heatmap for THIS (cap, ζ) pair
+                            # Per-action advantage (compass rose) for THIS (cap, ζ)
                             ax_a = axes[global_row, adv_col]
-                            adv_grid = adv_grids_full.get((c, z))
-                            if adv_grid is not None:
-                                im_a = ax_a.imshow(adv_grid, cmap='hot', origin='upper',
-                                                   vmin=0, vmax=vmax_adv)
-                                adv_mappable = im_a
+                            A = A_full.get((c, z))
+                            if A is not None:
+                                sm = _draw_per_action_advantage(
+                                    ax_a, env, A, vmin=-vabs_adv, vmax=vabs_adv)
+                                adv_mappable = sm
                                 _annotate_grid(ax_a, env, goals, compact=True)
                             else:
                                 ax_a.text(0.5, 0.5, 'N/A', ha='center', va='center',
@@ -1107,25 +1118,41 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                             ax_a.set_xticks([])
                             ax_a.set_yticks([])
 
+                            # Variance of advantage across actions
+                            ax_var = axes[global_row, var_col]
+                            vg = var_full.get((c, z))
+                            if vg is not None:
+                                im_var = ax_var.imshow(vg, cmap='viridis',
+                                                       origin='upper',
+                                                       vmin=0, vmax=vmax_var)
+                                var_mappable = im_var
+                                _annotate_grid(ax_var, env, goals, compact=True)
+                            else:
+                                ax_var.text(0.5, 0.5, 'N/A', ha='center', va='center',
+                                            transform=ax_var.transAxes, fontsize=8, color='gray')
+                                ax_var.set_xlim(0, 1)
+                                ax_var.set_ylim(0, 1)
+                            ax_var.set_xticks([])
+                            ax_var.set_yticks([])
+
                             if global_row == 0:
-                                # Column titles: a single ζ label spans the vis|adv pair,
-                                # and each sub-column is annotated "vis" / "adv".
                                 ax_v.set_title('visit', fontsize=7)
                                 ax_a.set_title('adv', fontsize=7)
+                                ax_var.set_title('var', fontsize=7)
 
                 fig.subplots_adjust(
-                    left=0.13, right=0.86, bottom=0.04, top=0.92,
+                    left=0.13, right=0.80, bottom=0.04, top=0.82,
                     wspace=0.06, hspace=0.30)
 
-                # Single ζ header centered over each (vis, adv) pair in the top row
+                # Single ζ header centered over each (vis, adv, var) triple in the top row
                 for zi, z in enumerate(zetas):
-                    vis_col = 2 * zi
-                    adv_col = 2 * zi + 1
+                    vis_col = 3 * zi
+                    var_col = 3 * zi + 2
                     ax_v = axes[0, vis_col]
-                    ax_a = axes[0, adv_col]
+                    ax_end = axes[0, var_col]
                     bbox_v = ax_v.get_position()
-                    bbox_a = ax_a.get_position()
-                    x_center = (bbox_v.x0 + bbox_a.x1) / 2.0
+                    bbox_end = ax_end.get_position()
+                    x_center = (bbox_v.x0 + bbox_end.x1) / 2.0
                     y_top = bbox_v.y1 + 0.025
                     fig.text(x_center, y_top, rf'$\zeta={z}$',
                              ha='center', va='bottom', fontsize=11, fontweight='bold')
@@ -1151,7 +1178,9 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                              ha='left', va='center',
                              fontsize=11, fontweight='bold')
 
-                # Per-budget visit colorbars precisely aligned with each budget band
+                # Per-budget visit colorbars aligned with each budget band.
+                # Three colorbar columns spaced to avoid tick-label collisions:
+                #   visit x=0.83, adv x=0.90, var x=0.96
                 for bi, budget in enumerate(budget_vals):
                     im = vis_mappables.get(budget)
                     if im is None:
@@ -1162,7 +1191,7 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                     bbox_last = last.get_position()
                     y0 = bbox_last.y0
                     height = bbox_first.y1 - bbox_last.y0
-                    cax = fig.add_axes([0.88, y0, 0.010, height])
+                    cax = fig.add_axes([0.83, y0, 0.010, height])
                     cb = fig.colorbar(im, cax=cax)
                     cb.set_label('Visits', fontsize=8)
                     cb.ax.tick_params(labelsize=6)
@@ -1172,15 +1201,24 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                     bot_bbox = axes[-1, 0].get_position()
                     y0 = bot_bbox.y0
                     height = top_bbox.y1 - bot_bbox.y0
-                    cax_adv = fig.add_axes([0.94, y0, 0.012, height])
+                    cax_adv = fig.add_axes([0.90, y0, 0.010, height])
                     cb_adv = fig.colorbar(adv_mappable, cax=cax_adv)
-                    cb_adv.set_label(r'$\max_a A^{\mu}(s,a)$', fontsize=9)
+                    cb_adv.set_label(r'$A^{\mu}(s,a)$', fontsize=9)
                     cb_adv.ax.tick_params(labelsize=7)
+
+                if var_mappable is not None:
+                    top_bbox = axes[0, 0].get_position()
+                    bot_bbox = axes[-1, 0].get_position()
+                    y0 = bot_bbox.y0
+                    height = top_bbox.y1 - bot_bbox.y0
+                    cax_var = fig.add_axes([0.96, y0, 0.010, height])
+                    cb_var = fig.colorbar(var_mappable, cax=cax_var)
+                    cb_var.set_label(r'$\mathrm{Var}_a\,A^{\mu}$', fontsize=9)
+                    cb_var.ax.tick_params(labelsize=7)
 
                 # Section separators in figure coordinates. Thick horizontal
                 # lines split budget bands; thin vertical lines split each
-                # (vis|adv) ζ pair from the next pair so readers can parse
-                # dense grids more easily.
+                # (vis|adv|var) ζ triple from the next so dense grids stay parseable.
                 from matplotlib.lines import Line2D
                 grid_left = axes[0, 0].get_position().x0
                 grid_right = axes[0, n_cols - 1].get_position().x1
@@ -1193,13 +1231,13 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                     fig.add_artist(Line2D(
                         [grid_left, grid_right], [y, y],
                         color='black', linewidth=1.3, zorder=10))
-                # Vertical separators between each ζ pair (zi=0..n_zeta-2)
+                # Vertical separators between each ζ triple (zi=0..n_zeta-2)
                 grid_top = axes[0, 0].get_position().y1
                 grid_bot = axes[-1, 0].get_position().y0
                 for zi in range(n_zeta - 1):
-                    right_of_pair = axes[0, 2 * zi + 1].get_position()
-                    left_of_next = axes[0, 2 * zi + 2].get_position()
-                    x = (right_of_pair.x1 + left_of_next.x0) / 2.0
+                    right_of_triple = axes[0, 3 * zi + 2].get_position()
+                    left_of_next = axes[0, 3 * zi + 3].get_position()
+                    x = (right_of_triple.x1 + left_of_next.x0) / 2.0
                     fig.add_artist(Line2D(
                         [x, x], [grid_bot, grid_top],
                         color='black', linewidth=1.0, zorder=10))
@@ -1209,10 +1247,11 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                     rf'Cap$\times\zeta$ visitation + teacher advantage — '
                     rf'distance={dist}, horizon={horizon_val} ({h_type}), {alpha_label}'
                     '\n'
-                    r'Each $(c,\;\zeta)$ cell shows visitation (left) and '
-                    r'$\max_a A^{\mu}(s,a)$ (right). '
+                    r'Each $(c,\;\zeta)$ cell: visitation (left), per-action '
+                    r'$A^{\mu}(s,a)$ compass rose (middle), '
+                    r'$\mathrm{Var}_a\,A^{\mu}(s,\cdot)$ (right). '
                     r'Rows grouped by budget $T$ (per-budget visit colour scale).',
-                    fontsize=11, fontweight='bold')
+                    fontsize=11, fontweight='bold', y=0.97)
 
                 save_path = os.path.join(
                     figures_dir,
@@ -1284,7 +1323,10 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
             n_tv = len(row_keys)
             n_alpha = len(col_keys)
             n_budget = len(budget_vals)
-            n_cols = n_alpha + 1  # +1 for advantage column
+            # Two extra columns: per-action advantage (compass rose) + variance
+            n_cols = n_alpha + 2
+            ADV_COL = n_alpha
+            VAR_COL = n_alpha + 1
             n_rows = n_budget * n_tv
 
             cell_size = 1.4
@@ -1304,20 +1346,29 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 vmax_vis_per_budget[budget] = max(
                     vmax_vis_per_budget.get(budget, 0), grid.max())
 
-            # Advantage shared across all rows (advantage doesn't depend on budget)
-            adv_grids = {}
-            vmax_adv = 0
+            # Per-action advantage + variance share colormaps across all rows
+            # (neither depends on budget). Advantage uses symmetric diverging
+            # scale; variance uses viridis (>=0).
+            A_matrices = {}
+            var_grids = {}
+            vabs_adv = 0.0
+            vmax_var = 0.0
             for rk in row_keys:
                 A = teacher_advantages.get(rk)
                 if A is not None:
-                    g = A.max(axis=1).reshape(env.grid_size, env.grid_size)
-                    adv_grids[rk] = g
-                    vmax_adv = max(vmax_adv, np.abs(g).max())
-            if vmax_adv == 0:
-                vmax_adv = 1
+                    A_matrices[rk] = A
+                    vabs_adv = max(vabs_adv, float(np.abs(A).max()))
+                    vg = _variance_grid(A, env)
+                    var_grids[rk] = vg
+                    vmax_var = max(vmax_var, float(vg.max()))
+            if vabs_adv == 0:
+                vabs_adv = 1.0
+            if vmax_var == 0:
+                vmax_var = 1.0
 
             vis_mappables = {}  # budget -> matplotlib image (for per-budget colorbars)
             adv_mappable = None
+            var_mappable = None
 
             for bi, budget in enumerate(budget_vals):
                 vmax_vis = vmax_vis_per_budget.get(budget, 0) or 1
@@ -1338,13 +1389,13 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                         if global_row == 0:
                             ax.set_title(col_label_fn(ck), fontsize=9)
 
-                    # Advantage column (rightmost)
-                    ax_adv = axes[global_row, n_alpha]
-                    adv_grid = adv_grids.get(rk)
-                    if adv_grid is not None:
-                        im_adv = ax_adv.imshow(adv_grid, cmap='hot', origin='upper',
-                                               vmin=0, vmax=vmax_adv)
-                        adv_mappable = im_adv
+                    # Per-action advantage column (compass rose)
+                    ax_adv = axes[global_row, ADV_COL]
+                    A = A_matrices.get(rk)
+                    if A is not None:
+                        sm = _draw_per_action_advantage(
+                            ax_adv, env, A, vmin=-vabs_adv, vmax=vabs_adv)
+                        adv_mappable = sm
                         _annotate_grid(ax_adv, env, goals, compact=True)
                     else:
                         ax_adv.text(0.5, 0.5, 'N/A', ha='center', va='center',
@@ -1354,12 +1405,31 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                     ax_adv.set_xticks([])
                     ax_adv.set_yticks([])
                     if global_row == 0:
-                        ax_adv.set_title(r'$\max_a A^{\mu}(s,a)$', fontsize=9)
+                        ax_adv.set_title(r'$A^{\mu}(s,a)$ per action', fontsize=9)
 
-            # Layout: leave room on left for band label + row labels, on right for
-            # per-budget visit colorbars + one shared advantage colorbar.
+                    # Variance column: Var_a A^mu(s, .)
+                    ax_var = axes[global_row, VAR_COL]
+                    vg = var_grids.get(rk)
+                    if vg is not None:
+                        im_var = ax_var.imshow(vg, cmap='viridis', origin='upper',
+                                               vmin=0, vmax=vmax_var)
+                        var_mappable = im_var
+                        _annotate_grid(ax_var, env, goals, compact=True)
+                    else:
+                        ax_var.text(0.5, 0.5, 'N/A', ha='center', va='center',
+                                    transform=ax_var.transAxes, fontsize=9, color='gray')
+                        ax_var.set_xlim(0, 1)
+                        ax_var.set_ylim(0, 1)
+                    ax_var.set_xticks([])
+                    ax_var.set_yticks([])
+                    if global_row == 0:
+                        ax_var.set_title(r'$\mathrm{Var}_a\,A^{\mu}(s,\cdot)$', fontsize=9)
+
+            # Layout: leave room on left for band label + row labels, on right
+            # for per-budget visit colorbars + advantage + variance colorbars,
+            # on top for the 2-line suptitle.
             fig.subplots_adjust(
-                left=0.14, right=0.86, bottom=0.04, top=0.93,
+                left=0.14, right=0.80, bottom=0.04, top=0.88,
                 wspace=0.10, hspace=0.25)
 
             # Use fig.text (not set_ylabel) for row labels so they render reliably
@@ -1384,7 +1454,11 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                          ha='left', va='center',
                          fontsize=11, fontweight='bold')
 
-            # Per-budget visit colorbars precisely aligned with each budget band
+            # Per-budget visit colorbars precisely aligned with each budget band.
+            # Three colorbar columns are spaced so tick labels don't collide:
+            #   visit: x=0.83  (per band)
+            #   adv:   x=0.90  (shared)
+            #   var:   x=0.96  (shared)
             for bi, budget in enumerate(budget_vals):
                 im = vis_mappables.get(budget)
                 if im is None:
@@ -1395,31 +1469,37 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 bbox_last = last.get_position()
                 y0 = bbox_last.y0
                 height = bbox_first.y1 - bbox_last.y0
-                cax = fig.add_axes([0.88, y0, 0.010, height])
+                cax = fig.add_axes([0.83, y0, 0.010, height])
                 cb = fig.colorbar(im, cax=cax)
                 cb.set_label('Visits', fontsize=8)
                 cb.ax.tick_params(labelsize=6)
 
             if adv_mappable is not None:
-                # Advantage colorbar spans full subplot grid height for consistent look
                 top_bbox = axes[0, 0].get_position()
                 bot_bbox = axes[-1, 0].get_position()
                 y0 = bot_bbox.y0
                 height = top_bbox.y1 - bot_bbox.y0
-                cax_adv = fig.add_axes([0.94, y0, 0.012, height])
+                cax_adv = fig.add_axes([0.90, y0, 0.010, height])
                 cb_adv = fig.colorbar(adv_mappable, cax=cax_adv)
-                cb_adv.set_label('Advantage', fontsize=9)
+                cb_adv.set_label(r'$A^{\mu}(s,a)$', fontsize=9)
                 cb_adv.ax.tick_params(labelsize=7)
+
+            if var_mappable is not None:
+                top_bbox = axes[0, 0].get_position()
+                bot_bbox = axes[-1, 0].get_position()
+                y0 = bot_bbox.y0
+                height = top_bbox.y1 - bot_bbox.y0
+                cax_var = fig.add_axes([0.96, y0, 0.010, height])
+                cb_var = fig.colorbar(var_mappable, cax=cax_var)
+                cb_var.set_label(r'$\mathrm{Var}_a\,A^{\mu}$', fontsize=9)
+                cb_var.ax.tick_params(labelsize=7)
 
             # Section separators drawn in figure coordinates so they can cross
             # subplot boundaries. Horizontal lines split the stacked budget
-            # bands; a vertical line separates the α columns from the shared
-            # advantage column.
+            # bands; vertical lines separate α columns from the adv/var panels.
             from matplotlib.lines import Line2D
             grid_left = axes[0, 0].get_position().x0
             grid_right = axes[0, n_cols - 1].get_position().x1
-            # Budget-band separators — drawn between the bottom of band `bi`
-            # and the top of band `bi+1`.
             for bi in range(n_budget - 1):
                 bottom_row = bi * n_tv + n_tv - 1
                 top_row = (bi + 1) * n_tv
@@ -1429,16 +1509,22 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 fig.add_artist(Line2D(
                     [grid_left, grid_right], [y, y],
                     color='black', linewidth=1.3, zorder=10))
-            # Vertical separator between the α-column block and the advantage
-            # column so readers see the advantage as a distinct panel.
+            # Vertical separator between α-block and adv column
             right_alpha = axes[0, n_alpha - 1].get_position()
-            adv_col = axes[0, n_alpha].get_position()
-            x_sep = (right_alpha.x1 + adv_col.x0) / 2.0
+            adv_col_bbox = axes[0, ADV_COL].get_position()
+            x_sep = (right_alpha.x1 + adv_col_bbox.x0) / 2.0
             grid_top = axes[0, 0].get_position().y1
             grid_bot = axes[-1, 0].get_position().y0
             fig.add_artist(Line2D(
                 [x_sep, x_sep], [grid_bot, grid_top],
                 color='black', linewidth=1.3, zorder=10))
+            # Vertical separator between adv and var columns
+            adv_bbox = axes[0, ADV_COL].get_position()
+            var_bbox = axes[0, VAR_COL].get_position()
+            x_sep2 = (adv_bbox.x1 + var_bbox.x0) / 2.0
+            fig.add_artist(Line2D(
+                [x_sep2, x_sep2], [grid_bot, grid_top],
+                color='black', linewidth=0.8, linestyle='--', zorder=10))
 
             fig.suptitle(
                 rf'State visitation + teacher advantage — distance={dist}, '
@@ -1446,7 +1532,7 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 '\n'
                 rf'Rows grouped by budget $T\in\{{{",".join(str(b) for b in budget_vals)}\}}$. '
                 r'Each budget band has its own visit colour scale.',
-                fontsize=11, fontweight='bold')
+                fontsize=11, fontweight='bold', y=0.97)
 
             save_path = os.path.join(
                 figures_dir,
@@ -1454,6 +1540,69 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             plt.close(fig)
             print(f"Saved {save_path}")
+
+
+def _draw_per_action_advantage(ax, env, A, vmin, vmax, cmap_name='RdBu_r'):
+    """Draw per-action advantage as a compass rose: 4 triangles per cell.
+
+    Cell (i, j) is split into 4 triangles meeting at the center:
+      - Top triangle    → A(s, 0)  (UP)
+      - Bottom triangle → A(s, 1)  (DOWN)
+      - Left triangle   → A(s, 2)  (LEFT)
+      - Right triangle  → A(s, 3)  (RIGHT)
+
+    Args:
+        A: shape (n_states, n_actions) — advantage values.
+        vmin, vmax: shared color range (use symmetric around 0 for diverging).
+    Returns:
+        A ScalarMappable for colorbar use.
+    """
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import PolyCollection
+
+    cmap = plt.get_cmap(cmap_name)
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+    G = env.grid_size
+
+    # Vectorize: 4 triangles per cell, one PolyCollection for the whole grid.
+    ii, jj = np.meshgrid(np.arange(G), np.arange(G), indexing='ij')
+    cx = jj.ravel().astype(float)
+    cy = ii.ravel().astype(float)
+    tl = np.stack([cx - 0.5, cy - 0.5], axis=1)
+    tr = np.stack([cx + 0.5, cy - 0.5], axis=1)
+    bl = np.stack([cx - 0.5, cy + 0.5], axis=1)
+    br = np.stack([cx + 0.5, cy + 0.5], axis=1)
+    cc = np.stack([cx, cy], axis=1)
+
+    # Triangle stacks — shape (G*G, 3, 2) per action
+    tri_up = np.stack([tl, tr, cc], axis=1)
+    tri_dn = np.stack([bl, br, cc], axis=1)
+    tri_lf = np.stack([tl, bl, cc], axis=1)
+    tri_rt = np.stack([tr, br, cc], axis=1)
+
+    state_idx = np.array([env.state_to_idx((int(i), int(j)))
+                          for i, j in zip(ii.ravel(), jj.ravel())])
+    a_up, a_dn, a_lf, a_rt = A[state_idx, 0], A[state_idx, 1], A[state_idx, 2], A[state_idx, 3]
+
+    verts = np.concatenate([tri_up, tri_dn, tri_lf, tri_rt], axis=0)
+    vals = np.concatenate([a_up, a_dn, a_lf, a_rt], axis=0)
+
+    pc = PolyCollection(verts, array=vals, cmap=cmap, norm=norm,
+                        edgecolors='gray', linewidths=0.15)
+    ax.add_collection(pc)
+    ax.set_xlim(-0.5, G - 0.5)
+    ax.set_ylim(G - 0.5, -0.5)
+    ax.set_aspect('equal')
+    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+    return sm
+
+
+def _variance_grid(A, env):
+    """Return per-state variance of advantage across actions, shaped to grid."""
+    return A.var(axis=1).reshape(env.grid_size, env.grid_size)
 
 
 def _annotate_grid(ax, env, goals, compact: bool = False):
