@@ -30,7 +30,7 @@ N_GOALS_LIST = [1, 3]
 CALIBRATION_PATH = 'results/calibration.json'
 
 # Trajectory-mode calibration parameters (shared by "hybrid" and "sample")
-TRAJECTORY_LR_VALUES = [2.0, 5.0, 10.0, 20.0]
+TRAJECTORY_LR_VALUES = [1.0, 2.0, 5.0, 10.0, 20.0]
 TRAJECTORY_TRAJ_PER_UPDATE = [1, 4, 7, 10]
 HYBRID_CALIBRATION_PATH = 'results/calibration_hybrid.json'
 SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
