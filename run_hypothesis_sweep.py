@@ -49,7 +49,7 @@ CAP_GOAL_POSITIONS = {
     d: generate_equidistant_goals(9, 3, distance=d) for d in DISTANCES
 }
 
-ZETA_VALUES = [0.0, 0.25, 0.5, 0.75, 1.0]
+ZETA_VALUES = [0.0, 0.33, 0.67, 1.0]
 CAP_VALUES = [-1, 0, 1, 2, 3]
 
 # Cap-zeta mode: 3 goals per distance, sweep (capacity, zeta)
