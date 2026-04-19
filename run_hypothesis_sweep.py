@@ -111,41 +111,50 @@ def _load_calibrated_budgets(mode: str):
     return budgets_map
 
 
+HYBRID_CALIBRATION_PATH = 'results/calibration_hybrid.json'
 SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
 
 
-def _load_sample_calibration(mode: str):
-    """Load per-config sample calibration (LR, traj_per_update, budgets)."""
-    n_goals = 1 if mode == 'zeta' else 3
+def _load_trajectory_calibration(sweep_mode: str, training_mode: str):
+    """Load per-config calibration (LR, traj_per_update, budgets) for a
+    trajectory-based training mode ("hybrid" or "sample")."""
+    n_goals = 1 if sweep_mode == 'zeta' else 3
 
-    if not os.path.exists(SAMPLE_CALIBRATION_PATH):
-        print("ERROR: Sample calibration not found!", flush=True)
-        print(f"  Run: PYTHONPATH=. python run_calibration.py --mode sample", flush=True)
+    cal_path = {
+        'hybrid': HYBRID_CALIBRATION_PATH,
+        'sample': SAMPLE_CALIBRATION_PATH,
+    }[training_mode]
+
+    if not os.path.exists(cal_path):
+        print(f"ERROR: {training_mode} calibration not found at {cal_path}!", flush=True)
+        print(f"  Run: PYTHONPATH=. python run_calibration.py --mode {training_mode}",
+              flush=True)
         return None
 
-    with open(SAMPLE_CALIBRATION_PATH) as f:
+    with open(cal_path) as f:
         calibration = json.load(f)
 
-    sample_config = {}  # (dist, h_type) -> {lr, tpu, budgets}
+    cfg = {}  # (dist, h_type) -> {lr, tpu, budgets}
     for dist in DISTANCES:
         for h_type in HORIZON_TYPES:
             key = f"dist={dist}_{h_type}_ng={n_goals}_grid={GRID_SIZE}"
             if key in calibration:
                 c = calibration[key]
-                sample_config[(dist, h_type)] = {
+                cfg[(dist, h_type)] = {
                     'lr': c['best_lr'],
                     'trajectories_per_update': c['best_traj_per_update'],
                     'budgets': c['budgets'],
                 }
             else:
-                print(f"WARNING: No sample calibration for {key}.", flush=True)
-                sample_config[(dist, h_type)] = {
+                print(f"WARNING: No {training_mode} calibration for {key}.",
+                      flush=True)
+                cfg[(dist, h_type)] = {
                     'lr': 0.1,
                     'trajectories_per_update': 10,
                     'budgets': FALLBACK_BUDGETS,
                 }
 
-    return sample_config
+    return cfg
 
 
 # =========================================================================
@@ -155,7 +164,7 @@ def _load_sample_calibration(mode: str):
 def _run_single_experiment(args_tuple):
     """Worker function for multiprocessing. Returns result dict."""
     (mode, teacher_val, alpha, budget, h_type, dist, seed,
-     horizons, exact_gradient, lr, traj_per_update) = args_tuple
+     horizons, training_mode, lr, traj_per_update) = args_tuple
     goal_pos = _goal_positions(mode)
     goals = goal_pos[dist]
     horizon = horizons[h_type]
@@ -170,7 +179,7 @@ def _run_single_experiment(args_tuple):
         seed=seed,
         eval_interval=5,
         eval_n_episodes=50,
-        exact_gradient=exact_gradient,
+        mode=training_mode,
     )
     if mode == 'zeta':
         kwargs['zeta'] = teacher_val
@@ -226,8 +235,13 @@ def _write_progress(output_dir, completed, total, elapsed):
 
 
 def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
-              exact_gradient: bool = True) -> list:
-    """Run all experiments for the given mode, save CSV, return result dicts."""
+              training_mode: str = "exact") -> list:
+    """Run all experiments for the given mode, save CSV, return result dicts.
+
+    Args:
+        training_mode: one of "exact", "hybrid", "sample" (see
+            :func:`tabular_prototype.experiments.run_experiment`).
+    """
     horizons = _get_horizons()
     csv_path = os.path.join(output_dir, f'{mode}_sweep_results.csv')
 
@@ -240,14 +254,17 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
     else:
         teacher_values = CAP_VALUES
 
-    if exact_gradient:
+    if training_mode == "exact":
         budgets_map = _load_calibrated_budgets(mode)
         default_lr = 0.5
         default_tpu = 10
-        sample_config = None
+        traj_config = None
     else:
-        sample_config = _load_sample_calibration(mode)
-        budgets_map = {k: v['budgets'] for k, v in sample_config.items()} if sample_config else None
+        traj_config = _load_trajectory_calibration(mode, training_mode)
+        budgets_map = (
+            {k: v['budgets'] for k, v in traj_config.items()}
+            if traj_config else None
+        )
         default_lr = 0.1
         default_tpu = 10
 
@@ -290,8 +307,8 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
 
     worker_args = []
     for tv, alpha, budget, h_type, dist, seed in configs:
-        if sample_config and (dist, h_type) in sample_config:
-            sc = sample_config[(dist, h_type)]
+        if traj_config and (dist, h_type) in traj_config:
+            sc = traj_config[(dist, h_type)]
             lr = sc['lr']
             tpu = sc['trajectories_per_update']
         else:
@@ -299,7 +316,7 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
             tpu = default_tpu
         worker_args.append(
             (mode, tv, alpha, budget, h_type, dist, seed,
-             horizons, exact_gradient, lr, tpu)
+             horizons, training_mode, lr, tpu)
         )
 
     t0 = time.time()
@@ -1883,9 +1900,11 @@ def main():
                         help='Skip experiments, only generate plots from existing CSV')
     parser.add_argument('--all-plots', action='store_true',
                         help='Also generate heatmaps and distance_effect plots (off by default)')
-    parser.add_argument('--exact-gradient', type=str, default='true',
-                        choices=['true', 'false'],
-                        help='Use exact NPG (true, default) or sample-based (false)')
+    parser.add_argument('--training-mode', type=str, default='exact',
+                        choices=['exact', 'hybrid', 'sample'],
+                        help='Training mode: exact NPG (default), hybrid '
+                             '(trajectory gradient + exact Q^π), or sample '
+                             '(trajectory gradient + MC return estimates).')
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -1912,9 +1931,9 @@ def main():
             all_results = None
             print(f"No pickle cache found at {pkl_path} — visitation grids will be skipped")
     else:
-        exact_gradient = args.exact_gradient == 'true'
         all_results = run_sweep(args.mode, args.output_dir, args.n_seeds,
-                                args.n_workers, exact_gradient=exact_gradient)
+                                args.n_workers,
+                                training_mode=args.training_mode)
 
     # Load CSV for plotting
     df = pd.read_csv(csv_path)

@@ -134,7 +134,7 @@ def test_run_experiment_exact_mode():
         lr=0.1,
         seed=0,
         eval_interval=10,
-        exact_gradient=True,
+        mode="exact",
     )
     assert 'final_mean_reward' in result
     assert 'history' in result
@@ -147,12 +147,12 @@ def test_run_experiment_exact_learns():
     result_teacher = run_experiment(
         grid_size=4, goals=[(3, 3)], teacher_capacity=1,
         horizon=16, sample_budget=200, alpha=0.5, lr=0.1,
-        seed=0, eval_interval=50, exact_gradient=True,
+        seed=0, eval_interval=50, mode="exact",
     )
     result_vanilla = run_experiment(
         grid_size=4, goals=[(3, 3)], teacher_capacity=1,
         horizon=16, sample_budget=200, alpha=0.0, lr=0.1,
-        seed=0, eval_interval=50, exact_gradient=True,
+        seed=0, eval_interval=50, mode="exact",
     )
     assert result_teacher['final_goal_rate'] > 0.0 or result_vanilla['final_goal_rate'] > 0.0
 
@@ -181,7 +181,7 @@ def test_learning_curve_saturation():
         lr=0.1,
         n_seeds=2,
         eval_interval=2,
-        exact_gradient=True,
+        mode="exact",
         max_budget=500,
     )
     assert 0 in histories
@@ -204,7 +204,7 @@ def test_full_pipeline_exact_mode():
         lr=0.5,
         seed=0,
         eval_interval=50,
-        exact_gradient=True,
+        mode="exact",
     )
     assert result['final_goal_rate'] > 0.3, (
         f"Expected goal_rate > 0.3, got {result['final_goal_rate']}"
@@ -212,8 +212,9 @@ def test_full_pipeline_exact_mode():
     assert result['budget_mode'] == 'exact'
 
 
-def test_full_pipeline_sample_mode():
-    """End-to-end: sample-based mode with truncation still works."""
+def test_full_pipeline_hybrid_mode():
+    """End-to-end: hybrid mode (trajectory gradient + exact Q^π) with
+    truncation still works."""
     result = run_experiment(
         grid_size=4,
         goals=[(3, 3)],
@@ -224,7 +225,26 @@ def test_full_pipeline_sample_mode():
         lr=0.1,
         seed=0,
         eval_interval=5,
-        exact_gradient=False,
+        mode="hybrid",
+    )
+    assert result['budget_mode'] == 'hybrid'
+    assert 'final_mean_reward' in result
+
+
+def test_full_pipeline_sample_mode():
+    """End-to-end: sample mode (trajectory gradient + MC returns) runs
+    without crashing on a small grid."""
+    result = run_experiment(
+        grid_size=4,
+        goals=[(3, 3)],
+        teacher_capacity=1,
+        horizon=16,
+        sample_budget=500,
+        alpha=0.5,
+        lr=0.1,
+        seed=0,
+        eval_interval=5,
+        mode="sample",
     )
     assert result['budget_mode'] == 'sample'
     assert 'final_mean_reward' in result

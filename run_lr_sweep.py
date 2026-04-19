@@ -54,7 +54,7 @@ def run_lr_sweep(
                 seed=seed,
                 eval_interval=2,
                 eval_n_episodes=50,
-                exact_gradient=True,
+                mode="exact",
             )
             histories[lr].append(result['history'])
             if result['history']:
