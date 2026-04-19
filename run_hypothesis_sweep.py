@@ -114,36 +114,51 @@ def _load_calibrated_budgets(mode: str):
 SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
 
 
-def _load_sample_calibration(mode: str):
-    """Load per-config sample calibration (LR, traj_per_update, budgets)."""
+def _load_sample_calibration(mode: str, n_seeds_calib: int = 3):
+    """Load per-config sample calibration (LR, traj_per_update, budgets).
+
+    If calibration_sample.json doesn't exist or is missing configs, auto-runs
+    calibration for the missing configs and caches the results.
+    """
+    from run_calibration import calibrate_sample_single
+
     n_goals = 1 if mode == 'zeta' else 3
 
-    if not os.path.exists(SAMPLE_CALIBRATION_PATH):
-        print("ERROR: Sample calibration not found!", flush=True)
-        print(f"  Run: PYTHONPATH=. python run_calibration.py --mode sample", flush=True)
-        return None
-
-    with open(SAMPLE_CALIBRATION_PATH) as f:
-        calibration = json.load(f)
+    if os.path.exists(SAMPLE_CALIBRATION_PATH):
+        with open(SAMPLE_CALIBRATION_PATH) as f:
+            calibration = json.load(f)
+    else:
+        calibration = {}
 
     sample_config = {}  # (dist, h_type) -> {lr, tpu, budgets}
+    updated = False
     for dist in DISTANCES:
         for h_type in HORIZON_TYPES:
             key = f"dist={dist}_{h_type}_ng={n_goals}_grid={GRID_SIZE}"
-            if key in calibration:
-                c = calibration[key]
-                sample_config[(dist, h_type)] = {
-                    'lr': c['best_lr'],
-                    'trajectories_per_update': c['best_traj_per_update'],
-                    'budgets': c['budgets'],
-                }
-            else:
-                print(f"WARNING: No sample calibration for {key}.", flush=True)
-                sample_config[(dist, h_type)] = {
-                    'lr': 0.1,
-                    'trajectories_per_update': 10,
-                    'budgets': FALLBACK_BUDGETS,
-                }
+            if key not in calibration:
+                print(f"  Auto-calibrating missing config: {key} ...",
+                      end=" ", flush=True)
+                result = calibrate_sample_single(
+                    dist, h_type, n_goals, GRID_SIZE,
+                    n_seeds_calib, 2000, 0.95,
+                )
+                calibration[key] = result
+                updated = True
+                print(f"lr={result['best_lr']}, tpu={result['best_traj_per_update']}, "
+                      f"T_sat={result['T_sat']}", flush=True)
+
+            c = calibration[key]
+            sample_config[(dist, h_type)] = {
+                'lr': c['best_lr'],
+                'trajectories_per_update': c['best_traj_per_update'],
+                'budgets': c['budgets'],
+            }
+
+    if updated:
+        os.makedirs(os.path.dirname(SAMPLE_CALIBRATION_PATH) or '.', exist_ok=True)
+        with open(SAMPLE_CALIBRATION_PATH, 'w') as f:
+            json.dump(calibration, f, indent=2)
+        print(f"  Saved updated calibration to {SAMPLE_CALIBRATION_PATH}", flush=True)
 
     return sample_config
 
