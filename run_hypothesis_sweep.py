@@ -114,11 +114,19 @@ def _load_calibrated_budgets(mode: str):
 SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
 
 
+DEFAULT_CALIB_BUDGET = 2000
+UNSATURATED_BUDGET_MULTIPLIER = 3
+
+
 def _load_sample_calibration(mode: str, n_seeds_calib: int = 3):
     """Load per-config sample calibration (LR, traj_per_update, budgets).
 
-    If calibration_sample.json doesn't exist or is missing configs, auto-runs
-    calibration for the missing configs and caches the results.
+    Handles three cases per config:
+    1. Missing from JSON → auto-calibrate with DEFAULT_CALIB_BUDGET, cache result.
+    2. Present but unsaturated (best combo didn't reach threshold) and was run
+       with DEFAULT_CALIB_BUDGET → re-run with 3× budget, cache result.
+    3. Present and saturated, OR already re-run with extended budget → use as-is
+       (warn loudly if still unsaturated after extended run).
     """
     from run_calibration import calibrate_sample_single
 
@@ -135,19 +143,43 @@ def _load_sample_calibration(mode: str, n_seeds_calib: int = 3):
     for dist in DISTANCES:
         for h_type in HORIZON_TYPES:
             key = f"dist={dist}_{h_type}_ng={n_goals}_grid={GRID_SIZE}"
+
+            needs_run = False
+            run_budget = DEFAULT_CALIB_BUDGET
+
             if key not in calibration:
+                needs_run = True
                 print(f"  Auto-calibrating missing config: {key} ...",
                       end=" ", flush=True)
+            elif not calibration[key].get('saturated', True):
+                prev_budget = calibration[key].get('max_budget', DEFAULT_CALIB_BUDGET)
+                extended_budget = DEFAULT_CALIB_BUDGET * UNSATURATED_BUDGET_MULTIPLIER
+                if prev_budget < extended_budget:
+                    needs_run = True
+                    run_budget = extended_budget
+                    print(f"  Re-calibrating unsaturated config: {key} "
+                          f"(prev budget={prev_budget}, extending to {run_budget}) ...",
+                          end=" ", flush=True)
+
+            if needs_run:
                 result = calibrate_sample_single(
                     dist, h_type, n_goals, GRID_SIZE,
-                    n_seeds_calib, 2000, 0.95,
+                    n_seeds_calib, run_budget, 0.95,
                 )
                 calibration[key] = result
                 updated = True
+                sat_str = "saturated" if result.get('saturated') else "NOT SATURATED"
                 print(f"lr={result['best_lr']}, tpu={result['best_traj_per_update']}, "
-                      f"T_sat={result['T_sat']}", flush=True)
+                      f"T_sat={result['T_sat']}, {sat_str}", flush=True)
 
             c = calibration[key]
+            if not c.get('saturated', True):
+                print(f"  WARNING: {key} did NOT saturate even at "
+                      f"budget={c.get('max_budget')}! "
+                      f"T_sat={c['T_sat']} is the budget cap, not true saturation. "
+                      f"Best reward={c['best_final_reward']:.3f} < 0.95 threshold.",
+                      flush=True)
+
             sample_config[(dist, h_type)] = {
                 'lr': c['best_lr'],
                 'trajectories_per_update': c['best_traj_per_update'],

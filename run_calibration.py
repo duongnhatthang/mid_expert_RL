@@ -174,6 +174,9 @@ def calibrate_sample_single(distance, h_type, n_goals, grid_size,
     best = candidates[best_key]
     t_sat = best['T_sat_max']
 
+    # Check if the best combo actually saturated (reached threshold within budget)
+    saturated = best['final_reward_mean'] >= threshold
+
     raw = [max(3, t_sat // 5), max(3, t_sat // 3), t_sat, t_sat * 2]
     budgets = [raw[0]]
     for v in raw[1:]:
@@ -181,6 +184,7 @@ def calibrate_sample_single(distance, h_type, n_goals, grid_size,
 
     return {
         'T_sat': t_sat,
+        'saturated': saturated,
         'budgets': budgets,
         'best_lr': best['lr'],
         'best_traj_per_update': best['trajectories_per_update'],
