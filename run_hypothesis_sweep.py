@@ -86,7 +86,9 @@ def _goal_positions(mode: str):
     return CAP_GOAL_POSITIONS  # both 'capability' and 'cap_zeta' use 3-goal positions
 
 
-def _load_calibrated_budgets(mode: str, n_seeds_calib: int = 3):
+def _load_calibrated_budgets(mode: str, n_seeds_calib: int = 3,
+                               calibration_path: str = None,
+                               distances=None):
     """Load per-config budgets from calibration.json for exact mode.
 
     Handles three cases per config:
@@ -98,21 +100,32 @@ def _load_calibrated_budgets(mode: str, n_seeds_calib: int = 3):
 
     Legacy entries without a 'saturated' flag are treated as saturated (the
     original calibration file was populated before the flag existed).
+
+    Args:
+        calibration_path: path to the exact calibration JSON. Defaults to
+            the module-level CALIBRATION_PATH.
+        distances: iterable of distances to load. Defaults to module-level
+            DISTANCES.
     """
     from run_calibration import calibrate_single
+
+    if calibration_path is None:
+        calibration_path = CALIBRATION_PATH
+    if distances is None:
+        distances = DISTANCES
 
     n_goals = 1 if mode == 'zeta' else 3
     lr = 0.5
 
-    if os.path.exists(CALIBRATION_PATH):
-        with open(CALIBRATION_PATH) as f:
+    if os.path.exists(calibration_path):
+        with open(calibration_path) as f:
             calibration = json.load(f)
     else:
         calibration = {}
 
     budgets_map = {}  # (dist, h_type) -> list of budgets
     updated = False
-    for dist in DISTANCES:
+    for dist in distances:
         for h_type in HORIZON_TYPES:
             key = f"dist={dist}_{h_type}_ng={n_goals}_lr={lr}_grid={GRID_SIZE}"
 
@@ -157,10 +170,10 @@ def _load_calibrated_budgets(mode: str, n_seeds_calib: int = 3):
             budgets_map[(dist, h_type)] = c['budgets']
 
     if updated:
-        os.makedirs(os.path.dirname(CALIBRATION_PATH) or '.', exist_ok=True)
-        with open(CALIBRATION_PATH, 'w') as f:
+        os.makedirs(os.path.dirname(calibration_path) or '.', exist_ok=True)
+        with open(calibration_path, 'w') as f:
             json.dump(calibration, f, indent=2)
-        print(f"  Saved updated calibration to {CALIBRATION_PATH}",
+        print(f"  Saved updated calibration to {calibration_path}",
               flush=True)
 
     return budgets_map
@@ -174,7 +187,9 @@ def _trajectory_calibration_path(training_mode: str) -> str:
 
 
 def _load_trajectory_calibration(sweep_mode: str, training_mode: str,
-                                  n_seeds_calib: int = 3):
+                                  n_seeds_calib: int = 3,
+                                  calibration_path: str = None,
+                                  distances=None):
     """Load per-config calibration (LR, traj_per_update, budgets) for a
     trajectory-based training mode ("hybrid" or "sample").
 
@@ -184,11 +199,22 @@ def _load_trajectory_calibration(sweep_mode: str, training_mode: str,
        run with DEFAULT_CALIB_BUDGET → re-run with 3× budget, cache.
     3. Present and saturated (or already extended) → use as-is; warn loudly
        if still unsaturated after extended run.
+
+    Args:
+        calibration_path: path to the trajectory calibration JSON. Defaults
+            to the module-level path for the given training_mode.
+        distances: iterable of distances to load. Defaults to module-level
+            DISTANCES.
     """
     from run_calibration import calibrate_trajectory_single
 
+    if calibration_path is None:
+        calibration_path = _trajectory_calibration_path(training_mode)
+    if distances is None:
+        distances = DISTANCES
+
     n_goals = 1 if sweep_mode == 'zeta' else 3
-    cal_path = _trajectory_calibration_path(training_mode)
+    cal_path = calibration_path
 
     if os.path.exists(cal_path):
         with open(cal_path) as f:
@@ -198,7 +224,7 @@ def _load_trajectory_calibration(sweep_mode: str, training_mode: str,
 
     cfg = {}  # (dist, h_type) -> {lr, tpu, budgets}
     updated = False
-    for dist in DISTANCES:
+    for dist in distances:
         for h_type in HORIZON_TYPES:
             key = f"dist={dist}_{h_type}_ng={n_goals}_grid={GRID_SIZE}"
 
@@ -338,13 +364,33 @@ def _write_progress(output_dir, completed, total, elapsed):
 
 
 def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
-              training_mode: str = "exact") -> list:
+              training_mode: str = "exact",
+              calibration_paths: dict = None,
+              distances=None) -> list:
     """Run all experiments for the given mode, save CSV, return result dicts.
 
     Args:
         training_mode: one of "exact", "hybrid", "sample" (see
             :func:`tabular_prototype.experiments.run_experiment`).
+        calibration_paths: optional dict mapping training_mode → path of the
+            calibration JSON to use. Keys: "exact", "hybrid", "sample".
+            Missing keys fall back to module-level constants. Lets tests and
+            batch jobs point at alternate calibration files without
+            mutating module state.
+        distances: optional iterable of distances to sweep. Defaults to the
+            module-level DISTANCES. Tests use a reduced set to keep runs
+            fast.
     """
+    if distances is None:
+        distances = DISTANCES
+    resolved_paths = {
+        'exact': CALIBRATION_PATH,
+        'hybrid': HYBRID_CALIBRATION_PATH,
+        'sample': SAMPLE_CALIBRATION_PATH,
+    }
+    if calibration_paths:
+        resolved_paths.update(calibration_paths)
+
     horizons = _get_horizons()
     csv_path = os.path.join(output_dir, f'{mode}_sweep_results.csv')
 
@@ -358,12 +404,20 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
         teacher_values = CAP_VALUES
 
     if training_mode == "exact":
-        budgets_map = _load_calibrated_budgets(mode)
+        budgets_map = _load_calibrated_budgets(
+            mode,
+            calibration_path=resolved_paths['exact'],
+            distances=distances,
+        )
         default_lr = 0.5
         default_tpu = 10
         traj_config = None
     else:
-        traj_config = _load_trajectory_calibration(mode, training_mode)
+        traj_config = _load_trajectory_calibration(
+            mode, training_mode,
+            calibration_path=resolved_paths[training_mode],
+            distances=distances,
+        )
         budgets_map = (
             {k: v['budgets'] for k, v in traj_config.items()}
             if traj_config else None
@@ -375,7 +429,7 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
     configs = []
     all_budget_sets = set()
     for tv, alpha, h_type, dist, seed in itertools.product(
-        teacher_values, ALPHA_VALUES, HORIZON_TYPES, DISTANCES, range(n_seeds)
+        teacher_values, ALPHA_VALUES, HORIZON_TYPES, distances, range(n_seeds)
     ):
         if alpha == 0.0 and tv != teacher_values[0]:
             continue
