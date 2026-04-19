@@ -62,9 +62,14 @@ ALPHA_VALUES = [0.0, 0.33, 0.67, 1.0]
 HORIZON_TYPES = ['small', 'large']
 
 CALIBRATION_PATH = 'results/calibration.json'
+HYBRID_CALIBRATION_PATH = 'results/calibration_hybrid.json'
+SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
 
 # Fallback budgets if calibration not available
 FALLBACK_BUDGETS = [10, 30, 100, 200]
+
+DEFAULT_CALIB_BUDGET = 2000
+UNSATURATED_BUDGET_MULTIPLIER = 3
 
 
 def _get_horizons():
@@ -81,64 +86,117 @@ def _goal_positions(mode: str):
     return CAP_GOAL_POSITIONS  # both 'capability' and 'cap_zeta' use 3-goal positions
 
 
-def _load_calibrated_budgets(mode: str):
-    """Load per-config budgets from calibration.json."""
+def _load_calibrated_budgets(mode: str, n_seeds_calib: int = 3):
+    """Load per-config budgets from calibration.json for exact mode.
+
+    Handles three cases per config:
+    1. Missing from JSON → auto-calibrate with DEFAULT_CALIB_BUDGET, cache.
+    2. Present but unsaturated (T_sat hit budget cap) and was run with
+       DEFAULT_CALIB_BUDGET → re-run with 3× budget, cache.
+    3. Present and saturated (or already extended) → use as-is; warn if still
+       unsaturated after extended run.
+
+    Legacy entries without a 'saturated' flag are treated as saturated (the
+    original calibration file was populated before the flag existed).
+    """
+    from run_calibration import calibrate_single
+
     n_goals = 1 if mode == 'zeta' else 3
     lr = 0.5
 
-    if not os.path.exists(CALIBRATION_PATH):
-        print("=" * 70, flush=True)
-        print("WARNING: Calibration file not found!", flush=True)
-        print(f"  Expected: {CALIBRATION_PATH}", flush=True)
-        print(f"  Using fallback budgets: {FALLBACK_BUDGETS}", flush=True)
-        print("  Run calibration first: PYTHONPATH=. python run_calibration.py", flush=True)
-        print("=" * 70, flush=True)
-        return None
-
-    with open(CALIBRATION_PATH) as f:
-        calibration = json.load(f)
-
-    budgets_map = {}  # (dist, h_type) -> list of budgets
-    for dist in DISTANCES:
-        for h_type in HORIZON_TYPES:
-            key = f"dist={dist}_{h_type}_ng={n_goals}_lr={lr}_grid={GRID_SIZE}"
-            if key in calibration:
-                budgets_map[(dist, h_type)] = calibration[key]['budgets']
-            else:
-                print(f"WARNING: No calibration for {key}. Using fallback.", flush=True)
-                budgets_map[(dist, h_type)] = FALLBACK_BUDGETS
-
-    return budgets_map
-
-
-SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
-
-
-DEFAULT_CALIB_BUDGET = 2000
-UNSATURATED_BUDGET_MULTIPLIER = 3
-
-
-def _load_sample_calibration(mode: str, n_seeds_calib: int = 3):
-    """Load per-config sample calibration (LR, traj_per_update, budgets).
-
-    Handles three cases per config:
-    1. Missing from JSON → auto-calibrate with DEFAULT_CALIB_BUDGET, cache result.
-    2. Present but unsaturated (best combo didn't reach threshold) and was run
-       with DEFAULT_CALIB_BUDGET → re-run with 3× budget, cache result.
-    3. Present and saturated, OR already re-run with extended budget → use as-is
-       (warn loudly if still unsaturated after extended run).
-    """
-    from run_calibration import calibrate_sample_single
-
-    n_goals = 1 if mode == 'zeta' else 3
-
-    if os.path.exists(SAMPLE_CALIBRATION_PATH):
-        with open(SAMPLE_CALIBRATION_PATH) as f:
+    if os.path.exists(CALIBRATION_PATH):
+        with open(CALIBRATION_PATH) as f:
             calibration = json.load(f)
     else:
         calibration = {}
 
-    sample_config = {}  # (dist, h_type) -> {lr, tpu, budgets}
+    budgets_map = {}  # (dist, h_type) -> list of budgets
+    updated = False
+    for dist in DISTANCES:
+        for h_type in HORIZON_TYPES:
+            key = f"dist={dist}_{h_type}_ng={n_goals}_lr={lr}_grid={GRID_SIZE}"
+
+            needs_run = False
+            run_budget = DEFAULT_CALIB_BUDGET
+
+            if key not in calibration:
+                needs_run = True
+                print(f"  Auto-calibrating missing exact config: {key} ...",
+                      end=" ", flush=True)
+            elif not calibration[key].get('saturated', True):
+                prev_budget = calibration[key].get('max_budget',
+                                                    DEFAULT_CALIB_BUDGET)
+                extended_budget = (DEFAULT_CALIB_BUDGET
+                                   * UNSATURATED_BUDGET_MULTIPLIER)
+                if prev_budget < extended_budget:
+                    needs_run = True
+                    run_budget = extended_budget
+                    print(f"  Re-calibrating unsaturated exact config: "
+                          f"{key} (prev budget={prev_budget}, extending to "
+                          f"{run_budget}) ...", end=" ", flush=True)
+
+            if needs_run:
+                result = calibrate_single(
+                    dist, h_type, n_goals, lr, GRID_SIZE,
+                    n_seeds_calib, run_budget, 0.95,
+                )
+                calibration[key] = result
+                updated = True
+                sat_str = ("saturated" if result.get('saturated')
+                           else "NOT SATURATED")
+                print(f"T_sat={result['T_sat']}, {sat_str}", flush=True)
+
+            c = calibration[key]
+            if not c.get('saturated', True):
+                print(f"  WARNING: exact {key} did NOT saturate even at "
+                      f"budget={c.get('max_budget')}! T_sat={c['T_sat']} is "
+                      f"the budget cap, not true saturation. Best reward="
+                      f"{c.get('best_final_reward', float('nan')):.3f} < "
+                      f"0.95 threshold.", flush=True)
+
+            budgets_map[(dist, h_type)] = c['budgets']
+
+    if updated:
+        os.makedirs(os.path.dirname(CALIBRATION_PATH) or '.', exist_ok=True)
+        with open(CALIBRATION_PATH, 'w') as f:
+            json.dump(calibration, f, indent=2)
+        print(f"  Saved updated calibration to {CALIBRATION_PATH}",
+              flush=True)
+
+    return budgets_map
+
+
+def _trajectory_calibration_path(training_mode: str) -> str:
+    return {
+        'hybrid': HYBRID_CALIBRATION_PATH,
+        'sample': SAMPLE_CALIBRATION_PATH,
+    }[training_mode]
+
+
+def _load_trajectory_calibration(sweep_mode: str, training_mode: str,
+                                  n_seeds_calib: int = 3):
+    """Load per-config calibration (LR, traj_per_update, budgets) for a
+    trajectory-based training mode ("hybrid" or "sample").
+
+    Handles three cases per config:
+    1. Missing from JSON → auto-calibrate with DEFAULT_CALIB_BUDGET, cache.
+    2. Present but unsaturated (best combo didn't reach threshold) and was
+       run with DEFAULT_CALIB_BUDGET → re-run with 3× budget, cache.
+    3. Present and saturated (or already extended) → use as-is; warn loudly
+       if still unsaturated after extended run.
+    """
+    from run_calibration import calibrate_trajectory_single
+
+    n_goals = 1 if sweep_mode == 'zeta' else 3
+    cal_path = _trajectory_calibration_path(training_mode)
+
+    if os.path.exists(cal_path):
+        with open(cal_path) as f:
+            calibration = json.load(f)
+    else:
+        calibration = {}
+
+    cfg = {}  # (dist, h_type) -> {lr, tpu, budgets}
     updated = False
     for dist in DISTANCES:
         for h_type in HORIZON_TYPES:
@@ -149,50 +207,57 @@ def _load_sample_calibration(mode: str, n_seeds_calib: int = 3):
 
             if key not in calibration:
                 needs_run = True
-                print(f"  Auto-calibrating missing config: {key} ...",
-                      end=" ", flush=True)
+                print(f"  Auto-calibrating missing {training_mode} config: "
+                      f"{key} ...", end=" ", flush=True)
             elif not calibration[key].get('saturated', True):
-                prev_budget = calibration[key].get('max_budget', DEFAULT_CALIB_BUDGET)
-                extended_budget = DEFAULT_CALIB_BUDGET * UNSATURATED_BUDGET_MULTIPLIER
+                prev_budget = calibration[key].get('max_budget',
+                                                    DEFAULT_CALIB_BUDGET)
+                extended_budget = (DEFAULT_CALIB_BUDGET
+                                   * UNSATURATED_BUDGET_MULTIPLIER)
                 if prev_budget < extended_budget:
                     needs_run = True
                     run_budget = extended_budget
-                    print(f"  Re-calibrating unsaturated config: {key} "
-                          f"(prev budget={prev_budget}, extending to {run_budget}) ...",
+                    print(f"  Re-calibrating unsaturated {training_mode} "
+                          f"config: {key} (prev budget={prev_budget}, "
+                          f"extending to {run_budget}) ...",
                           end=" ", flush=True)
 
             if needs_run:
-                result = calibrate_sample_single(
+                result = calibrate_trajectory_single(
                     dist, h_type, n_goals, GRID_SIZE,
                     n_seeds_calib, run_budget, 0.95,
+                    training_mode=training_mode,
                 )
                 calibration[key] = result
                 updated = True
-                sat_str = "saturated" if result.get('saturated') else "NOT SATURATED"
-                print(f"lr={result['best_lr']}, tpu={result['best_traj_per_update']}, "
+                sat_str = ("saturated" if result.get('saturated')
+                           else "NOT SATURATED")
+                print(f"lr={result['best_lr']}, "
+                      f"tpu={result['best_traj_per_update']}, "
                       f"T_sat={result['T_sat']}, {sat_str}", flush=True)
 
             c = calibration[key]
             if not c.get('saturated', True):
-                print(f"  WARNING: {key} did NOT saturate even at "
-                      f"budget={c.get('max_budget')}! "
-                      f"T_sat={c['T_sat']} is the budget cap, not true saturation. "
-                      f"Best reward={c['best_final_reward']:.3f} < 0.95 threshold.",
+                print(f"  WARNING: {training_mode} {key} did NOT saturate "
+                      f"even at budget={c.get('max_budget')}! "
+                      f"T_sat={c['T_sat']} is the budget cap, not true "
+                      f"saturation. Best reward="
+                      f"{c['best_final_reward']:.3f} < 0.95 threshold.",
                       flush=True)
 
-            sample_config[(dist, h_type)] = {
+            cfg[(dist, h_type)] = {
                 'lr': c['best_lr'],
                 'trajectories_per_update': c['best_traj_per_update'],
                 'budgets': c['budgets'],
             }
 
     if updated:
-        os.makedirs(os.path.dirname(SAMPLE_CALIBRATION_PATH) or '.', exist_ok=True)
-        with open(SAMPLE_CALIBRATION_PATH, 'w') as f:
+        os.makedirs(os.path.dirname(cal_path) or '.', exist_ok=True)
+        with open(cal_path, 'w') as f:
             json.dump(calibration, f, indent=2)
-        print(f"  Saved updated calibration to {SAMPLE_CALIBRATION_PATH}", flush=True)
+        print(f"  Saved updated calibration to {cal_path}", flush=True)
 
-    return sample_config
+    return cfg
 
 
 # =========================================================================
@@ -202,7 +267,7 @@ def _load_sample_calibration(mode: str, n_seeds_calib: int = 3):
 def _run_single_experiment(args_tuple):
     """Worker function for multiprocessing. Returns result dict."""
     (mode, teacher_val, alpha, budget, h_type, dist, seed,
-     horizons, exact_gradient, lr, traj_per_update) = args_tuple
+     horizons, training_mode, lr, traj_per_update) = args_tuple
     goal_pos = _goal_positions(mode)
     goals = goal_pos[dist]
     horizon = horizons[h_type]
@@ -217,7 +282,7 @@ def _run_single_experiment(args_tuple):
         seed=seed,
         eval_interval=5,
         eval_n_episodes=50,
-        exact_gradient=exact_gradient,
+        mode=training_mode,
     )
     if mode == 'zeta':
         kwargs['zeta'] = teacher_val
@@ -273,8 +338,13 @@ def _write_progress(output_dir, completed, total, elapsed):
 
 
 def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
-              exact_gradient: bool = True) -> list:
-    """Run all experiments for the given mode, save CSV, return result dicts."""
+              training_mode: str = "exact") -> list:
+    """Run all experiments for the given mode, save CSV, return result dicts.
+
+    Args:
+        training_mode: one of "exact", "hybrid", "sample" (see
+            :func:`tabular_prototype.experiments.run_experiment`).
+    """
     horizons = _get_horizons()
     csv_path = os.path.join(output_dir, f'{mode}_sweep_results.csv')
 
@@ -287,14 +357,17 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
     else:
         teacher_values = CAP_VALUES
 
-    if exact_gradient:
+    if training_mode == "exact":
         budgets_map = _load_calibrated_budgets(mode)
         default_lr = 0.5
         default_tpu = 10
-        sample_config = None
+        traj_config = None
     else:
-        sample_config = _load_sample_calibration(mode)
-        budgets_map = {k: v['budgets'] for k, v in sample_config.items()} if sample_config else None
+        traj_config = _load_trajectory_calibration(mode, training_mode)
+        budgets_map = (
+            {k: v['budgets'] for k, v in traj_config.items()}
+            if traj_config else None
+        )
         default_lr = 0.1
         default_tpu = 10
 
@@ -337,8 +410,8 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
 
     worker_args = []
     for tv, alpha, budget, h_type, dist, seed in configs:
-        if sample_config and (dist, h_type) in sample_config:
-            sc = sample_config[(dist, h_type)]
+        if traj_config and (dist, h_type) in traj_config:
+            sc = traj_config[(dist, h_type)]
             lr = sc['lr']
             tpu = sc['trajectories_per_update']
         else:
@@ -346,7 +419,7 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
             tpu = default_tpu
         worker_args.append(
             (mode, tv, alpha, budget, h_type, dist, seed,
-             horizons, exact_gradient, lr, tpu)
+             horizons, training_mode, lr, tpu)
         )
 
     t0 = time.time()
@@ -2079,9 +2152,11 @@ def main():
                         help='Skip experiments, only generate plots from existing CSV')
     parser.add_argument('--all-plots', action='store_true',
                         help='Also generate heatmaps and distance_effect plots (off by default)')
-    parser.add_argument('--exact-gradient', type=str, default='true',
-                        choices=['true', 'false'],
-                        help='Use exact NPG (true, default) or sample-based (false)')
+    parser.add_argument('--training-mode', type=str, default='exact',
+                        choices=['exact', 'hybrid', 'sample'],
+                        help='Training mode: exact NPG (default), hybrid '
+                             '(trajectory gradient + exact Q^π), or sample '
+                             '(trajectory gradient + MC return estimates).')
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -2108,9 +2183,9 @@ def main():
             all_results = None
             print(f"No pickle cache found at {pkl_path} — visitation grids will be skipped")
     else:
-        exact_gradient = args.exact_gradient == 'true'
         all_results = run_sweep(args.mode, args.output_dir, args.n_seeds,
-                                args.n_workers, exact_gradient=exact_gradient)
+                                args.n_workers,
+                                training_mode=args.training_mode)
 
     # Load CSV for plotting
     df = pd.read_csv(csv_path)

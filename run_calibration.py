@@ -29,10 +29,29 @@ N_GOALS_LIST = [1, 3]
 
 CALIBRATION_PATH = 'results/calibration.json'
 
-# Sample mode calibration parameters
-SAMPLE_LR_VALUES = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
-SAMPLE_TRAJ_PER_UPDATE = [1, 4, 7, 10]
+# Trajectory-mode calibration parameters (shared by "hybrid" and "sample")
+TRAJECTORY_LR_VALUES = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
+TRAJECTORY_TRAJ_PER_UPDATE = [1, 4, 7, 10]
+HYBRID_CALIBRATION_PATH = 'results/calibration_hybrid.json'
 SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
+
+# Backwards-compat aliases (old names point at the new trajectory-mode constants)
+SAMPLE_LR_VALUES = TRAJECTORY_LR_VALUES
+SAMPLE_TRAJ_PER_UPDATE = TRAJECTORY_TRAJ_PER_UPDATE
+
+
+def _trajectory_calibration_path(training_mode: str) -> str:
+    if training_mode == 'hybrid':
+        return HYBRID_CALIBRATION_PATH
+    if training_mode == 'sample':
+        return SAMPLE_CALIBRATION_PATH
+    raise ValueError(
+        f"training_mode must be 'hybrid' or 'sample', got {training_mode!r}"
+    )
+
+
+def _trajectory_figures_dir(training_mode: str) -> str:
+    return f'results/calibration_{training_mode}_figures'
 
 
 def _config_key(distance, h_type, n_goals, lr, grid_size):
@@ -47,6 +66,7 @@ def calibrate_single(distance, h_type, n_goals, lr, grid_size,
     horizon = horizons[f'horizon_{h_type}']
 
     sat_steps = []
+    final_rewards = []
     for seed in range(n_seeds):
         result = run_experiment(
             grid_size=grid_size,
@@ -59,7 +79,7 @@ def calibrate_single(distance, h_type, n_goals, lr, grid_size,
             seed=seed,
             eval_interval=1,
             eval_n_episodes=50,
-            exact_gradient=True,
+            mode="exact",
         )
         # Find first step where mean_reward >= threshold
         t_sat = max_budget  # default if never saturates
@@ -68,12 +88,16 @@ def calibrate_single(distance, h_type, n_goals, lr, grid_size,
                 t_sat = entry['steps']
                 break
         sat_steps.append(t_sat)
+        if result['history']:
+            final_rewards.append(result['history'][-1]['mean_reward'])
 
     t_sat_mean = int(np.ceil(np.mean(sat_steps)))
     t_sat_max = int(max(sat_steps))
 
     # Use the max across seeds (conservative: ensure ALL seeds saturate)
     t_sat = t_sat_max
+    saturated = t_sat_max < max_budget
+    best_final_reward = float(np.mean(final_rewards)) if final_rewards else 0.0
 
     # Budget range: always exactly 4 values [T_sat//5, T_sat//3, T_sat, T_sat*2]
     # Note: in exact NPG mode, budget = update steps (full Bellman solve each),
@@ -91,6 +115,8 @@ def calibrate_single(distance, h_type, n_goals, lr, grid_size,
         'T_sat_max': t_sat_max,
         'per_seed': sat_steps,
         'budgets': budgets,
+        'saturated': saturated,
+        'best_final_reward': best_final_reward,
         'horizon': horizon,
         'n_goals': n_goals,
         'distance': distance,
@@ -103,23 +129,30 @@ def calibrate_single(distance, h_type, n_goals, lr, grid_size,
     }
 
 
-def calibrate_sample_single(distance, h_type, n_goals, grid_size,
-                             n_seeds, max_budget, threshold,
-                             existing_combos=None):
-    """Sweep LR x trajectories_per_update for sample mode.
+def calibrate_trajectory_single(distance, h_type, n_goals, grid_size,
+                                 n_seeds, max_budget, threshold,
+                                 training_mode: str,
+                                 existing_combos=None):
+    """Sweep LR x trajectories_per_update for a trajectory-based mode
+    ("hybrid" or "sample").
 
     Args:
+        training_mode: "hybrid" (exact Q^π) or "sample" (MC returns).
         existing_combos: dict of combo_key -> combo_data from a prior run.
             If provided, combos already in this dict are skipped (extend mode).
     """
+    if training_mode not in ('hybrid', 'sample'):
+        raise ValueError(
+            f"training_mode must be 'hybrid' or 'sample', got {training_mode!r}"
+        )
     goals = generate_equidistant_goals(grid_size, n_goals, distance=distance)
     horizons = compute_exploration_thresholds(grid_size)
     horizon = horizons[f'horizon_{h_type}']
 
     combo_results = {}
 
-    for lr in SAMPLE_LR_VALUES:
-        for tpu in SAMPLE_TRAJ_PER_UPDATE:
+    for lr in TRAJECTORY_LR_VALUES:
+        for tpu in TRAJECTORY_TRAJ_PER_UPDATE:
             combo_key = f'lr={lr}_tpu={tpu}'
             if existing_combos and combo_key in existing_combos:
                 combo_results[(lr, tpu)] = existing_combos[combo_key]
@@ -140,7 +173,7 @@ def calibrate_sample_single(distance, h_type, n_goals, grid_size,
                     seed=seed,
                     eval_interval=max(1, max_budget // 200),
                     eval_n_episodes=50,
-                    exact_gradient=False,
+                    mode=training_mode,
                 )
                 t_sat = max_budget
                 for entry in result['history']:
@@ -198,7 +231,14 @@ def calibrate_sample_single(distance, h_type, n_goals, grid_size,
         'threshold': threshold,
         'max_budget': max_budget,
         'n_seeds': n_seeds,
+        'training_mode': training_mode,
     }
+
+
+# Backwards-compat alias used by any external caller.
+def calibrate_sample_single(*args, **kwargs):
+    kwargs.setdefault('training_mode', 'hybrid')
+    return calibrate_trajectory_single(*args, **kwargs)
 
 
 def _human_config_label(key):
@@ -219,20 +259,24 @@ def _human_config_label(key):
     return f'd={dist}, H={h_val} ({h}), {goal_label}'
 
 
-def _plot_sample_calibration_heatmaps(all_results, output_dir):
-    """Consolidated sample calibration figures:
+def _plot_trajectory_calibration_heatmaps(all_results, output_dir,
+                                            training_mode: str = 'hybrid'):
+    """Consolidated calibration figures for a trajectory-based mode
+    ("hybrid" or "sample"):
 
     1. (LR × TPU) heatmaps showing T_sat per combo (one subplot per config).
-    2. T_sat comparison bar chart: exact vs sample across all configs, with
+    2. T_sat comparison: exact vs (hybrid|sample) across all configs, with
        the derived sweep budget breakpoints annotated.
     """
     import matplotlib.pyplot as plt
 
+    mode_title = training_mode.capitalize()
+
     configs = sorted(all_results.keys())
     if not configs:
         return
-    lrs = sorted(SAMPLE_LR_VALUES)
-    tpus = sorted(SAMPLE_TRAJ_PER_UPDATE)
+    lrs = sorted(TRAJECTORY_LR_VALUES)
+    tpus = sorted(TRAJECTORY_TRAJ_PER_UPDATE)
 
     # --- Figure 1: one figure PER N_GOALS ---
     # Rows = distance (4, 6, 7, 8), cols = horizon (small, large).
@@ -318,7 +362,7 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
 
         goal_label = '1 goal (zeta sweep)' if ng == 1 else f'{ng} goals (capability sweep)'
         fig.suptitle(
-            rf'Sample-mode calibration — {goal_label}'
+            rf'{mode_title}-mode calibration — {goal_label}'
             '\n'
             r'Each cell: final mean reward (bold) and $T_{\mathrm{sat}}$ '
             r'(small, or "cap" if $\geq$ 2000 obs) per (LR $\times$ TPU) combo.'
@@ -329,14 +373,14 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
             fontsize=11, fontweight='bold')
         plt.tight_layout(rect=[0, 0, 0.88, 0.90])
         save_path = os.path.join(output_dir,
-                                  f'calibration_sample_ng{ng}.png')
+                                  f'calibration_{training_mode}_ng{ng}.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
         print(f"Saved {save_path}")
 
-    # --- Figure 2: T_sat heatmaps (exact and sample side by side) ---
+    # --- Figure 2: T_sat heatmaps (exact and trajectory mode side by side) ---
     # One figure per n_goals. Two heatmaps: rows=distance, cols=horizon.
-    # Left = exact T_sat (update steps), right = sample T_sat (observations).
+    # Left = exact T_sat (update steps), right = trajectory T_sat (observations).
     # Each cell shows T_sat (bold) and budget breakpoints (small).
     exact_path = CALIBRATION_PATH
     exact_cal = {}
@@ -345,7 +389,7 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
             exact_cal = json.load(f)
 
     # Single figure: 2×2 grid. Top row = 1 goal (zeta), bottom = 3 goals (cap).
-    # Left col = exact, right col = sample.
+    # Left col = exact, right col = trajectory mode.
     n_d = len(DISTANCES)
     n_h = len(HORIZON_TYPES)
     fig, axes = plt.subplots(len(N_GOALS_LIST), 2,
@@ -354,9 +398,9 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
 
     for ngi, ng in enumerate(N_GOALS_LIST):
         exact_grid = np.full((n_d, n_h), np.nan)
-        sample_grid = np.full((n_d, n_h), np.nan)
+        traj_grid = np.full((n_d, n_h), np.nan)
         exact_bud = {}
-        sample_bud = {}
+        traj_bud = {}
         for ri, dist in enumerate(DISTANCES):
             for ci, h_type in enumerate(HORIZON_TYPES):
                 key = f'dist={dist}_{h_type}_ng={ng}_grid={GRID_SIZE}'
@@ -367,14 +411,15 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                     exact_grid[ri, ci] = ecal['T_sat']
                     exact_bud[(ri, ci)] = ecal.get('budgets', [])
                 if cal:
-                    sample_grid[ri, ci] = cal['T_sat']
-                    sample_bud[(ri, ci)] = cal.get('budgets', [])
+                    traj_grid[ri, ci] = cal['T_sat']
+                    traj_bud[(ri, ci)] = cal.get('budgets', [])
 
         goal_label = '1 goal (zeta sweep)' if ng == 1 else f'{ng} goals (capability sweep)'
 
         for mi, (ax, grid, bmap, mode_label) in enumerate([
             (axes[ngi, 0], exact_grid, exact_bud, 'Exact (update steps)'),
-            (axes[ngi, 1], sample_grid, sample_bud, 'Sample (observations)'),
+            (axes[ngi, 1], traj_grid, traj_bud,
+             f'{mode_title} (observations)'),
         ]):
             vmax = np.nanmax(grid) if not np.all(np.isnan(grid)) else 1
             im = ax.imshow(grid, aspect='auto', cmap='YlOrRd', vmin=0,
@@ -402,7 +447,7 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
                          pad=0.02)
 
     fig.suptitle(
-        r'Vanilla NPG saturation budget $T_{\mathrm{sat}}$ — exact vs sample'
+        rf'Vanilla NPG saturation budget $T_{{\mathrm{{sat}}}}$ — exact vs {training_mode}'
         '\n'
         r'$T_{\mathrm{sat}}$ = first step/obs where vanilla NPG ($\alpha=0$, '
         r'no teacher) reaches $\geq 0.95$ mean reward.'
@@ -417,9 +462,16 @@ def _plot_sample_calibration_heatmaps(all_results, output_dir):
     print(f"Saved {save_path}")
 
 
+# Backwards-compat alias (old callers). Defaults to hybrid.
+def _plot_sample_calibration_heatmaps(all_results, output_dir):
+    _plot_trajectory_calibration_heatmaps(
+        all_results, output_dir, training_mode='hybrid'
+    )
+
+
 def _plot_sample_calibration_curves(cal_result, config_key, output_dir):
-    """Legacy per-config plot — kept for backward compat but superseded by
-    _plot_sample_calibration_heatmaps which produces consolidated views.
+    """Legacy per-config plot — kept as a no-op, superseded by
+    _plot_trajectory_calibration_heatmaps which produces consolidated views.
     """
     pass
 
@@ -479,10 +531,11 @@ def _run_exact_calibration(args):
         print(f"  {key:<43} {c['T_sat']:>6} {c['budgets']}")
 
 
-def _run_sample_calibration(args):
-    """Run sample-mode calibration: sweep LR x traj_per_update."""
-    cal_path = SAMPLE_CALIBRATION_PATH
-    fig_dir = 'results/calibration_sample_figures'
+def _run_trajectory_calibration(args, training_mode: str):
+    """Run calibration for a trajectory-based mode ("hybrid" or "sample"):
+    sweep LR x traj_per_update per config."""
+    cal_path = _trajectory_calibration_path(training_mode)
+    fig_dir = _trajectory_figures_dir(training_mode)
     os.makedirs(fig_dir, exist_ok=True)
     os.makedirs(os.path.dirname(cal_path) or '.', exist_ok=True)
 
@@ -500,8 +553,9 @@ def _run_sample_calibration(args):
     ]
 
     total = len(configs)
-    print(f"Sample calibration: {total} configs (grid={GRID_SIZE}, "
-          f"LRs={SAMPLE_LR_VALUES}, TPUs={SAMPLE_TRAJ_PER_UPDATE})",
+    print(f"{training_mode.capitalize()} calibration: {total} configs "
+          f"(grid={GRID_SIZE}, LRs={TRAJECTORY_LR_VALUES}, "
+          f"TPUs={TRAJECTORY_TRAJ_PER_UPDATE})",
           flush=True)
     print(f"  threshold={args.threshold}, max_budget={args.max_budget}", flush=True)
 
@@ -521,32 +575,33 @@ def _run_sample_calibration(args):
         if args.extend and key in calibration:
             existing_combos = calibration[key].get('all_combos', {})
             n_existing = len(existing_combos)
-            n_total = len(SAMPLE_LR_VALUES) * len(SAMPLE_TRAJ_PER_UPDATE)
+            n_total = len(TRAJECTORY_LR_VALUES) * len(TRAJECTORY_TRAJ_PER_UPDATE)
             print(f"  [{i+1}/{total}] {key}: extending "
                   f"({n_existing} cached, {n_total - n_existing} new)...",
                   flush=True)
         else:
             print(f"  [{i+1}/{total}] {key}: calibrating...", flush=True)
 
-        result = calibrate_sample_single(
+        result = calibrate_trajectory_single(
             dist, h_type, n_goals, GRID_SIZE,
             args.n_seeds, args.max_budget, args.threshold,
+            training_mode=training_mode,
             existing_combos=existing_combos,
         )
         calibration[key] = result
         print(f"    Best: lr={result['best_lr']}, tpu={result['best_traj_per_update']}, "
               f"T_sat={result['T_sat']}, budgets={result['budgets']}", flush=True)
 
-        _plot_sample_calibration_curves(result, key, fig_dir)
-
         with open(cal_path, 'w') as f:
             json.dump(calibration, f, indent=2)
 
-    print(f"\nSample calibration saved to {cal_path}", flush=True)
+    print(f"\n{training_mode.capitalize()} calibration saved to {cal_path}",
+          flush=True)
     print(f"Calibration plots saved to {fig_dir}/", flush=True)
 
     # Consolidated plots across all configs
-    _plot_sample_calibration_heatmaps(calibration, fig_dir)
+    _plot_trajectory_calibration_heatmaps(calibration, fig_dir,
+                                            training_mode=training_mode)
 
     print("\n--- Summary ---")
     print(f"{'Config':<45} {'LR':>5} {'TPU':>4} {'T_sat':>6} {'Budgets'}")
@@ -556,10 +611,18 @@ def _run_sample_calibration(args):
               f"{c['T_sat']:>6} {c['budgets']}")
 
 
+# Backwards-compat alias (old entrypoint).
+def _run_sample_calibration(args):
+    _run_trajectory_calibration(args, training_mode='hybrid')
+
+
 def main():
     parser = argparse.ArgumentParser(description='Budget calibration')
-    parser.add_argument('--mode', choices=['exact', 'sample'], default='exact',
-                        help='Calibrate for exact NPG (default) or sample-based mode')
+    parser.add_argument('--mode', choices=['exact', 'hybrid', 'sample'],
+                        default='exact',
+                        help='Calibrate for exact NPG (default), hybrid '
+                             '(trajectory gradient + exact Q^π), or sample '
+                             '(trajectory gradient + MC return estimates).')
     parser.add_argument('--n-seeds', type=int, default=5)
     parser.add_argument('--max-budget', type=int, default=2000)
     parser.add_argument('--threshold', type=float, default=0.95)
@@ -572,16 +635,20 @@ def main():
     args = parser.parse_args()
 
     if args.plot_only:
-        if args.mode == 'sample':
-            with open(SAMPLE_CALIBRATION_PATH) as f:
+        if args.mode in ('hybrid', 'sample'):
+            cal_path = _trajectory_calibration_path(args.mode)
+            fig_dir = _trajectory_figures_dir(args.mode)
+            with open(cal_path) as f:
                 calibration = json.load(f)
-            fig_dir = 'results/calibration_sample_figures'
             os.makedirs(fig_dir, exist_ok=True)
-            _plot_sample_calibration_heatmaps(calibration, fig_dir)
+            _plot_trajectory_calibration_heatmaps(
+                calibration, fig_dir, training_mode=args.mode
+            )
         else:
-            print("--plot-only currently only supported for sample mode")
-    elif args.mode == 'sample':
-        _run_sample_calibration(args)
+            print("--plot-only currently only supported for trajectory modes "
+                  "(hybrid, sample)")
+    elif args.mode in ('hybrid', 'sample'):
+        _run_trajectory_calibration(args, training_mode=args.mode)
     else:
         _run_exact_calibration(args)
 

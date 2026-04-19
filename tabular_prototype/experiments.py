@@ -22,6 +22,9 @@ from .training import (
 from .visualization import visualize_state_visitation, visualize_visitation_comparison_grid
 
 
+VALID_MODES = ("exact", "hybrid", "sample")
+
+
 def run_experiment(
     grid_size: int = 10,
     goals: List[Tuple[int, int]] = [(9, 9), (0, 9), (9, 0)],
@@ -35,15 +38,25 @@ def run_experiment(
     seed: int = 0,
     eval_interval: int = 10,
     eval_n_episodes: int = 20,
-    exact_gradient: bool = True,
+    mode: str = "exact",
 ) -> Dict:
     """Run a single experiment and return results dict.
 
     Args:
-        exact_gradient: If True (default), use exact NPG update where budget
-            = number of update steps. If False, use sample-based gradient
-            where budget = number of observations.
+        mode: training mode — one of:
+            - "exact" (default): exact NPG mirror-descent update applied to
+              every (s,a). Budget = number of update steps.
+            - "hybrid": trajectory-based PAV-RL gradient applied at the
+              rollout (s,a), but using the student's *exact* Q^π(s,a) (via
+              Bellman policy evaluation). Budget = number of observations.
+            - "sample": trajectory-based PAV-RL gradient applied at the
+              rollout (s,a), using *Monte Carlo* return estimates G_t in
+              place of Q^π. Budget = number of observations.
     """
+    if mode not in VALID_MODES:
+        raise ValueError(
+            f"mode must be one of {VALID_MODES}, got {mode!r}"
+        )
     rng = np.random.default_rng(seed)
     env = GridEnv(grid_size=grid_size, goals=goals, horizon=horizon)
 
@@ -76,7 +89,7 @@ def run_experiment(
 
     all_diagnostics = []
 
-    if exact_gradient:
+    if mode == "exact":
         # Exact NPG mode: budget = number of update steps
         start_idx = env.state_to_idx(env.start)
 
@@ -133,7 +146,8 @@ def run_experiment(
                     'state_entropy': 0.0,
                 })
     else:
-        # Sample-based mode: budget = number of observations
+        # Trajectory-based modes: budget = number of observations
+        # "hybrid" uses exact Q^π at rollout (s,a); "sample" uses MC returns.
         start_idx = env.state_to_idx(env.start)
 
         while total_steps < sample_budget:
@@ -156,6 +170,9 @@ def run_experiment(
             )
             cumulative_visitation += step_vis
 
+            # Exact Q^π / V^π are computed for diagnostics (V_before, delta-V
+            # decomposition, cos_q_a). In "sample" mode they are *not* used
+            # for the policy gradient — only Monte Carlo returns are.
             Q_pi, V_pi = compute_student_qvalues(env, policy, gamma)
             V_before = float(V_pi[start_idx])
 
@@ -164,8 +181,10 @@ def run_experiment(
             probs_start_safe = probs_start[probs_start > 0]
             entropy_start = float(-np.sum(probs_start_safe * np.log(probs_start_safe)))
 
+            q_pi_for_grad = Q_pi if mode == "hybrid" else None
             grad = compute_pav_rl_gradient(
-                policy, trajectories, Q_mu, V_mu, alpha, gamma, Q_pi=Q_pi
+                policy, trajectories, Q_mu, V_mu, alpha, gamma,
+                Q_pi=q_pi_for_grad,
             )
 
             # Save theta for delta-V decomposition
@@ -179,7 +198,8 @@ def run_experiment(
             policy_qpi_only = TabularSoftmaxPolicy(env.n_states, env.n_actions)
             policy_qpi_only.theta = theta_saved.copy()
             grad_qpi = compute_pav_rl_gradient(
-                policy_qpi_only, trajectories, Q_mu, V_mu, 0.0, gamma, Q_pi=Q_pi
+                policy_qpi_only, trajectories, Q_mu, V_mu, 0.0, gamma,
+                Q_pi=q_pi_for_grad,
             )
             update_policy(policy_qpi_only, grad_qpi, lr)
             _, V_pi_qpi = compute_student_qvalues(env, policy_qpi_only, gamma)
@@ -240,7 +260,7 @@ def run_experiment(
                 })
 
     # In exact mode, collect visitation from the final policy via evaluation trajectories
-    if exact_gradient and cumulative_visitation.sum() == 0:
+    if mode == "exact" and cumulative_visitation.sum() == 0:
         eval_trajs = collect_trajectories(env, policy, 100, rng)
         cumulative_visitation = compute_state_action_visitation(
             eval_trajs, env.n_states, env.n_actions
@@ -268,8 +288,8 @@ def run_experiment(
         'visitation_counts': cumulative_visitation,
         'history': history,
         'diagnostics': all_diagnostics,
-        'budget_mode': 'exact' if exact_gradient else 'sample',
-        'exact_gradient': exact_gradient,
+        'budget_mode': mode,
+        'mode': mode,
     }
 
 
@@ -597,7 +617,7 @@ def run_learning_curve_experiment(
     trajectories_per_update: int = 10,
     eval_interval: int = 2,
     eval_n_episodes: int = 50,
-    exact_gradient: bool = True,
+    mode: str = "exact",
     max_budget: int = 10000,
     saturation_window: int = 10,
     saturation_eps: float = 0.005,
@@ -623,7 +643,7 @@ def run_learning_curve_experiment(
             horizon=horizon, sample_budget=max_budget, alpha=0.0, lr=lr,
             trajectories_per_update=trajectories_per_update, seed=0,
             eval_interval=eval_interval, eval_n_episodes=eval_n_episodes,
-            exact_gradient=exact_gradient,
+            mode=mode,
         )
         effective_budget = _detect_saturation(
             sat_result['history'], max_budget,
@@ -646,7 +666,7 @@ def run_learning_curve_experiment(
                 trajectories_per_update=trajectories_per_update,
                 seed=seed, eval_interval=eval_interval,
                 eval_n_episodes=eval_n_episodes,
-                exact_gradient=exact_gradient,
+                mode=mode,
             )
             histories[cap].append(result['history'])
         rewards = [h[-1]['mean_reward'] for h in histories[cap] if h]
@@ -910,7 +930,7 @@ def run_learning_curve_experiment_zeta(
     trajectories_per_update: int = 10,
     eval_interval: int = 2,
     eval_n_episodes: int = 50,
-    exact_gradient: bool = True,
+    mode: str = "exact",
     max_budget: int = 10000,
     saturation_window: int = 10,
     saturation_eps: float = 0.005,
@@ -939,7 +959,7 @@ def run_learning_curve_experiment_zeta(
             horizon=horizon, sample_budget=max_budget, alpha=0.0, lr=lr,
             trajectories_per_update=trajectories_per_update, seed=0,
             eval_interval=eval_interval, eval_n_episodes=eval_n_episodes,
-            exact_gradient=exact_gradient,
+            mode=mode,
         )
         effective_budget = _detect_saturation(
             sat_result['history'], max_budget,
@@ -967,7 +987,7 @@ def run_learning_curve_experiment_zeta(
                 seed=seed,
                 eval_interval=eval_interval,
                 eval_n_episodes=eval_n_episodes,
-                exact_gradient=exact_gradient,
+                mode=mode,
             )
             histories[zeta].append(result['history'])
         rewards = [h[-1]['mean_reward'] for h in histories[zeta] if h]
