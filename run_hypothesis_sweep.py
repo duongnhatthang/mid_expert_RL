@@ -114,36 +114,83 @@ def _load_calibrated_budgets(mode: str):
 SAMPLE_CALIBRATION_PATH = 'results/calibration_sample.json'
 
 
-def _load_sample_calibration(mode: str):
-    """Load per-config sample calibration (LR, traj_per_update, budgets)."""
+DEFAULT_CALIB_BUDGET = 2000
+UNSATURATED_BUDGET_MULTIPLIER = 3
+
+
+def _load_sample_calibration(mode: str, n_seeds_calib: int = 3):
+    """Load per-config sample calibration (LR, traj_per_update, budgets).
+
+    Handles three cases per config:
+    1. Missing from JSON → auto-calibrate with DEFAULT_CALIB_BUDGET, cache result.
+    2. Present but unsaturated (best combo didn't reach threshold) and was run
+       with DEFAULT_CALIB_BUDGET → re-run with 3× budget, cache result.
+    3. Present and saturated, OR already re-run with extended budget → use as-is
+       (warn loudly if still unsaturated after extended run).
+    """
+    from run_calibration import calibrate_sample_single
+
     n_goals = 1 if mode == 'zeta' else 3
 
-    if not os.path.exists(SAMPLE_CALIBRATION_PATH):
-        print("ERROR: Sample calibration not found!", flush=True)
-        print(f"  Run: PYTHONPATH=. python run_calibration.py --mode sample", flush=True)
-        return None
-
-    with open(SAMPLE_CALIBRATION_PATH) as f:
-        calibration = json.load(f)
+    if os.path.exists(SAMPLE_CALIBRATION_PATH):
+        with open(SAMPLE_CALIBRATION_PATH) as f:
+            calibration = json.load(f)
+    else:
+        calibration = {}
 
     sample_config = {}  # (dist, h_type) -> {lr, tpu, budgets}
+    updated = False
     for dist in DISTANCES:
         for h_type in HORIZON_TYPES:
             key = f"dist={dist}_{h_type}_ng={n_goals}_grid={GRID_SIZE}"
-            if key in calibration:
-                c = calibration[key]
-                sample_config[(dist, h_type)] = {
-                    'lr': c['best_lr'],
-                    'trajectories_per_update': c['best_traj_per_update'],
-                    'budgets': c['budgets'],
-                }
-            else:
-                print(f"WARNING: No sample calibration for {key}.", flush=True)
-                sample_config[(dist, h_type)] = {
-                    'lr': 0.1,
-                    'trajectories_per_update': 10,
-                    'budgets': FALLBACK_BUDGETS,
-                }
+
+            needs_run = False
+            run_budget = DEFAULT_CALIB_BUDGET
+
+            if key not in calibration:
+                needs_run = True
+                print(f"  Auto-calibrating missing config: {key} ...",
+                      end=" ", flush=True)
+            elif not calibration[key].get('saturated', True):
+                prev_budget = calibration[key].get('max_budget', DEFAULT_CALIB_BUDGET)
+                extended_budget = DEFAULT_CALIB_BUDGET * UNSATURATED_BUDGET_MULTIPLIER
+                if prev_budget < extended_budget:
+                    needs_run = True
+                    run_budget = extended_budget
+                    print(f"  Re-calibrating unsaturated config: {key} "
+                          f"(prev budget={prev_budget}, extending to {run_budget}) ...",
+                          end=" ", flush=True)
+
+            if needs_run:
+                result = calibrate_sample_single(
+                    dist, h_type, n_goals, GRID_SIZE,
+                    n_seeds_calib, run_budget, 0.95,
+                )
+                calibration[key] = result
+                updated = True
+                sat_str = "saturated" if result.get('saturated') else "NOT SATURATED"
+                print(f"lr={result['best_lr']}, tpu={result['best_traj_per_update']}, "
+                      f"T_sat={result['T_sat']}, {sat_str}", flush=True)
+
+            c = calibration[key]
+            if not c.get('saturated', True):
+                print(f"  WARNING: {key} did NOT saturate even at "
+                      f"budget={c.get('max_budget')}! "
+                      f"T_sat={c['T_sat']} is the budget cap, not true saturation. "
+                      f"Best reward={c['best_final_reward']:.3f} < 0.95 threshold.",
+                      flush=True)
+
+            sample_config[(dist, h_type)] = {
+                'lr': c['best_lr'],
+                'trajectories_per_update': c['best_traj_per_update'],
+                'budgets': c['budgets'],
+            }
+
+    if updated:
+        os.makedirs(os.path.dirname(SAMPLE_CALIBRATION_PATH) or '.', exist_ok=True)
+        with open(SAMPLE_CALIBRATION_PATH, 'w') as f:
+            json.dump(calibration, f, indent=2)
+        print(f"  Saved updated calibration to {SAMPLE_CALIBRATION_PATH}", flush=True)
 
     return sample_config
 
