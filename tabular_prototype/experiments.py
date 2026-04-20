@@ -239,7 +239,8 @@ def run_experiment(
             }
             all_diagnostics.append(step_diag)
 
-            if update_count % eval_interval == 0:
+            is_last = total_steps >= sample_budget
+            if update_count % eval_interval == 0 or is_last:
                 eval_results = evaluate_policy(
                     env, policy, n_episodes=eval_n_episodes, rng=rng
                 )

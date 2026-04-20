@@ -929,10 +929,17 @@ def plot_reward_vs_teacher(df: pd.DataFrame, mode: str, figures_dir: str):
             continue
 
         n_metrics = len(METRICS)
+        dist_has_bf = ('V_backfilled' in dist_df.columns
+                       and bool(dist_df['V_backfilled'].any()))
+        # Reserve vertical space for the suptitle (more if we need the
+        # backfill explanation below it).
+        title_in = 1.35 if dist_has_bf else 0.55
+        fig_h = 3.5 * n_rows + title_in + 0.2
         fig, axes = plt.subplots(n_rows, n_metrics,
-                                 figsize=(5.5 * n_metrics, 3.5 * n_rows + 1.5),
+                                 figsize=(5.5 * n_metrics, fig_h),
                                  squeeze=False)
 
+        any_backfilled = False
         for mi, (metric, mlabel) in enumerate(METRICS):
             for row, (budget, h_type, horizon) in enumerate(bh_pairs):
                 ax = axes[row, mi]
@@ -941,11 +948,17 @@ def plot_reward_vs_teacher(df: pd.DataFrame, mode: str, figures_dir: str):
 
                 for ai, alpha in enumerate(ALPHA_VALUES):
                     alpha_sub = sub[sub['alpha'] == alpha]
-                    means, sems = [], []
+                    means, sems, bf_flags = [], [], []
                     for tv in teacher_vals:
-                        tv_data = alpha_sub[alpha_sub[tcol] == tv][metric]
+                        tv_rows = alpha_sub[alpha_sub[tcol] == tv]
+                        tv_data = tv_rows[metric]
                         means.append(tv_data.mean())
                         sems.append(tv_data.std() / np.sqrt(max(1, len(tv_data))))
+                        if ('V_backfilled' in tv_rows.columns
+                                and metric == 'final_V_discounted'):
+                            bf_flags.append(bool(tv_rows['V_backfilled'].any()))
+                        else:
+                            bf_flags.append(False)
 
                     means_arr = np.array(means)
                     sems_arr = np.array(sems)
@@ -954,6 +967,13 @@ def plot_reward_vs_teacher(df: pd.DataFrame, mode: str, figures_dir: str):
                             label=f'\u03b1={alpha}', color=c, linewidth=1.5)
                     ax.fill_between(x_positions, means_arr - sems_arr,
                                     means_arr + sems_arr, alpha=0.15, color=c)
+                    # Overlay open rings on cells containing backfilled seeds
+                    bf_x = [x for x, f in zip(x_positions, bf_flags) if f]
+                    bf_y = [m for m, f in zip(means_arr, bf_flags) if f]
+                    if bf_x:
+                        any_backfilled = True
+                        ax.scatter(bf_x, bf_y, s=60, facecolors='none',
+                                   edgecolors=c, linewidths=1.2, zorder=5)
 
                 ax.set_title(f'{mlabel}\n{_bh_title(budget, h_type, horizon)}',
                              fontsize=8)
@@ -977,10 +997,21 @@ def plot_reward_vs_teacher(df: pd.DataFrame, mode: str, figures_dir: str):
                     ax.legend(fontsize=6, loc='upper right')
 
         goals = goal_pos[dist]
-        fig.suptitle(f'Performance vs Teacher — distance={dist}, goals={goals}\n'
-                     f'{_mode_subtitle(mode)}',
-                     fontsize=11, fontweight='bold')
-        plt.tight_layout(rect=[0, 0, 1, 0.93])
+        title = (f'Performance vs Teacher — distance={dist}, goals={goals}\n'
+                 f'{_mode_subtitle(mode)}')
+        if any_backfilled:
+            title += (
+                '\nOpen rings around markers \u2192 V\u03c0(s\u2080) '
+                'reconstructed from training-time \u0394V diagnostics, not '
+                'measured directly at the end.\n'
+                'V is logged only every few policy updates; at small sample '
+                'budgets the run ends before enough updates accumulate to '
+                'trigger a logged snapshot.\n'
+                'Mean reward is evaluated separately and is unaffected.'
+            )
+        fig.suptitle(title, fontsize=13, fontweight='bold')
+        rect_top = 1.0 - title_in / fig_h
+        plt.tight_layout(rect=[0, 0, 1, rect_top])
         save_path = os.path.join(figures_dir, f'reward_vs_teacher_dist{dist}.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
@@ -1628,6 +1659,12 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                          ha='left', va='center',
                          fontsize=11, fontweight='bold')
 
+            # Pull axes up tight against the suptitle BEFORE reading their
+            # positions for colorbars / separators — otherwise subplots_adjust
+            # afterwards moves the axes but leaves the figure-coord artists
+            # misaligned.
+            fig.subplots_adjust(top=1.0 - 1.0 / fig_h)
+
             # Per-budget visit colorbars precisely aligned with each budget band.
             # Three colorbar columns are spaced so tick labels don't collide:
             #   visit: x=0.83  (per band)
@@ -1700,13 +1737,16 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 [x_sep2, x_sep2], [grid_bot, grid_top],
                 color='black', linewidth=0.8, linestyle='--', zorder=10))
 
+            # Title placement (axes already pulled up via subplots_adjust
+            # above, so here we just position the suptitle near the top).
+            title_top = 1.0 - 0.35 / fig_h
             fig.suptitle(
                 rf'State visitation + teacher advantage — distance={dist}, '
                 rf'horizon={horizon_val} ({h_type})'
                 '\n'
                 rf'Rows grouped by budget $T\in\{{{",".join(str(b) for b in budget_vals)}\}}$. '
                 r'Each budget band has its own visit colour scale.',
-                fontsize=11, fontweight='bold', y=0.97)
+                fontsize=11, fontweight='bold', y=title_top)
 
             save_path = os.path.join(
                 figures_dir,
