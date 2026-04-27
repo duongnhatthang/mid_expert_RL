@@ -1485,8 +1485,6 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
         return
 
     from collections import defaultdict
-    import os
-    import numpy as np
     import matplotlib.pyplot as plt
 
     tcol = _teacher_col(mode)
@@ -1569,7 +1567,8 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
                     mean = values.mean(axis=0)
                     std = values.std(axis=0)
                     label = _teacher_label(mode, tv)
-                    ax.plot(steps, mean, label=label, linewidth=1.5)
+                    ax.plot(steps, mean, label=label, linewidth=1.5,
+                            marker='o', markersize=3)
                     ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
 
                 ax.set_title(f'H={h_type}, B={budget}', fontsize=9)

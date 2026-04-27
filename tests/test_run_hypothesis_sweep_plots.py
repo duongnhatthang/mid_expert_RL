@@ -7,8 +7,6 @@ expected PNGs are written to <figures_dir>/learning_curves/.
 No image-diff testing — only file existence and non-trivial size.
 """
 
-import pytest
-
 import run_hypothesis_sweep as sweep
 
 
