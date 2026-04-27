@@ -118,3 +118,23 @@ def test_plot_learning_curves_capability(tmp_path):
 
     for p in out_dir.glob('*.png'):
         assert p.stat().st_size > 1000
+
+
+def test_plot_learning_curves_cap_zeta_noop(tmp_path):
+    """cap_zeta mode is intentionally unsupported — function early-returns
+    and writes nothing.
+    """
+    figures_dir = tmp_path
+    # Pass an arbitrary non-empty list; should not be inspected.
+    sweep.plot_learning_curves(
+        [{'distance': 4, 'alpha': 0.0, 'horizon_type': 'small',
+          'sample_budget': 10, 'cap_zeta': 'cap=1_z=0.5', 'seed': 0,
+          'history': []}],
+        mode='cap_zeta',
+        figures_dir=str(figures_dir),
+    )
+    out_dir = figures_dir / 'learning_curves'
+    # Either dir doesn't exist or it exists but is empty.
+    if out_dir.exists():
+        assert list(out_dir.glob('*.png')) == [], \
+            "cap_zeta mode must not write learning-curve PNGs"
