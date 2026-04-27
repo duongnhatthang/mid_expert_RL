@@ -1491,7 +1491,9 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
     out_dir = os.path.join(figures_dir, 'learning_curves')
 
     # Group results: (dist, alpha, h_type, budget, teacher_val) -> list of history lists
+    # Also collect numeric horizon per h_type so titles can show H=<value>.
     groups = defaultdict(list)
+    horizon_by_h_type = {}
     for r in all_results:
         if 'history' not in r or not r['history']:
             continue
@@ -1501,6 +1503,8 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
         key = (r['distance'], r['alpha'], r['horizon_type'],
                r['sample_budget'], r[tcol])
         groups[key].append(r['history'])
+        if 'horizon' in r:
+            horizon_by_h_type[r['horizon_type']] = r['horizon']
 
     if not groups:
         print("plot_learning_curves: no usable history entries — skipping")
@@ -1571,7 +1575,10 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
                             marker='o', markersize=3)
                     ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
 
-                ax.set_title(f'H={h_type}, B={budget}', fontsize=9)
+                h_val = horizon_by_h_type.get(h_type)
+                h_label = (f'H={h_val} ({h_type})' if h_val is not None
+                           else f'H={h_type}')
+                ax.set_title(f'{h_label}, B={budget}', fontsize=9)
                 ax.grid(True, alpha=0.3)
                 if col_idx == 0:
                     ax.set_ylabel(r'$V^\pi(s_0)$', fontsize=9)
