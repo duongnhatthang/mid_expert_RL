@@ -1768,6 +1768,12 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 left=0.14, right=0.80, bottom=0.04, top=0.88,
                 wspace=0.10, hspace=0.25)
 
+            # Pull axes up tight against the suptitle BEFORE reading their
+            # positions for any figure-coord artist (row labels, band labels,
+            # colorbars, separators) — otherwise subplots_adjust afterwards
+            # moves the axes but leaves figure-coord artists misaligned.
+            fig.subplots_adjust(top=1.0 - 1.0 / fig_h)
+
             # Use fig.text (not set_ylabel) for row labels so they render reliably
             # in dense grids. Position each label just left of the first column.
             for bi, budget in enumerate(budget_vals):
@@ -1789,12 +1795,6 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 fig.text(0.015, y_center, rf'$T={budget}$',
                          ha='left', va='center',
                          fontsize=11, fontweight='bold')
-
-            # Pull axes up tight against the suptitle BEFORE reading their
-            # positions for colorbars / separators — otherwise subplots_adjust
-            # afterwards moves the axes but leaves the figure-coord artists
-            # misaligned.
-            fig.subplots_adjust(top=1.0 - 1.0 / fig_h)
 
             # Per-budget visit colorbars precisely aligned with each budget band.
             # Three colorbar columns are spaced so tick labels don't collide:
