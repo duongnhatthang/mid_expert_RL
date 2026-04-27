@@ -120,6 +120,36 @@ def test_plot_learning_curves_capability(tmp_path):
         assert p.stat().st_size > 1000
 
 
+def test_plot_learning_curves_ragged_histories(tmp_path):
+    """In hybrid/sample mode, update count per seed varies because the
+    budget bounds env steps, not updates. plot_learning_curves must
+    truncate to the shortest seed's prefix and proceed silently rather
+    than raising.
+    """
+    out = []
+    # Single (dist, alpha, h_type, budget, zeta) cell, 3 seeds with
+    # history lengths {3, 4, 5}.
+    for seed, n_pts in zip([0, 1, 2], [3, 4, 5]):
+        out.append({
+            'distance': 4,
+            'alpha': 0.0,
+            'horizon_type': 'small',
+            'horizon': 8,
+            'sample_budget': 10,
+            'zeta': 0.0,
+            'seed': seed,
+            'history': _make_history(n_pts, base_v=0.0),
+        })
+
+    figures_dir = tmp_path
+    sweep.plot_learning_curves(out, mode='zeta', figures_dir=str(figures_dir))
+
+    out_dir = figures_dir / 'learning_curves'
+    pngs = list(out_dir.glob('*.png'))
+    assert len(pngs) == 1, f"Expected 1 PNG, got {len(pngs)}"
+    assert pngs[0].stat().st_size > 1000
+
+
 def test_plot_learning_curves_cap_zeta_noop(tmp_path):
     """cap_zeta mode is intentionally unsupported — function early-returns
     and writes nothing.

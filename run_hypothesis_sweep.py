@@ -1554,17 +1554,16 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
                     )
                     if not histories:
                         continue
-                    lengths = {len(h) for h in histories}
-                    if len(lengths) > 1:
-                        raise ValueError(
-                            f"Inconsistent history lengths {lengths} for "
-                            f"(dist={dist}, alpha={alpha}, h={h_type}, "
-                            f"budget={budget}, teacher={tv}) — pkl may "
-                            f"mix runs."
-                        )
-                    steps = [h['steps'] for h in histories[0]]
+                    # In hybrid/sample mode, update count per seed varies
+                    # because the budget bounds env steps, not updates.
+                    # Truncate to the shortest seed's prefix; common prefix
+                    # is at fixed `eval_interval` multiples so step values
+                    # align. Only the trailing "is_last" entry per seed
+                    # differs and gets dropped.
+                    min_len = min(len(h) for h in histories)
+                    steps = [h['steps'] for h in histories[0][:min_len]]
                     values = np.stack([
-                        [h['exact_V_start'] for h in seed_hist]
+                        [h['exact_V_start'] for h in seed_hist[:min_len]]
                         for seed_hist in histories
                     ], axis=0)
                     mean = values.mean(axis=0)
