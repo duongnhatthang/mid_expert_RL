@@ -1491,9 +1491,11 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
     out_dir = os.path.join(figures_dir, 'learning_curves')
 
     # Group results: (dist, alpha, h_type, budget, teacher_val) -> list of history lists
-    # Also collect numeric horizon per h_type so titles can show H=<value>.
+    # Also collect numeric horizon per h_type and the training mode so titles
+    # and axis labels can show numeric H and the right x-axis unit.
     groups = defaultdict(list)
     horizon_by_h_type = {}
+    training_modes = set()
     for r in all_results:
         if 'history' not in r or not r['history']:
             continue
@@ -1505,6 +1507,18 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
         groups[key].append(r['history'])
         if 'horizon' in r:
             horizon_by_h_type[r['horizon_type']] = r['horizon']
+        if 'mode' in r:
+            training_modes.add(r['mode'])
+
+    # X-axis unit depends on training mode: in exact mode the stored 'steps'
+    # field is update_count; in hybrid/sample it is total environment steps.
+    if training_modes == {'exact'}:
+        x_label = 'update step'
+    elif training_modes and 'exact' not in training_modes:
+        x_label = 'env step'
+    else:
+        # Mixed pkl or missing key: fall back to a generic label
+        x_label = 'step'
 
     if not groups:
         print("plot_learning_curves: no usable history entries — skipping")
@@ -1558,12 +1572,17 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
                         continue
                     # In hybrid/sample mode, update count per seed varies
                     # because the budget bounds env steps, not updates.
-                    # Truncate to the shortest seed's prefix; common prefix
-                    # is at fixed `eval_interval` multiples so step values
-                    # align. Only the trailing "is_last" entry per seed
-                    # differs and gets dropped.
+                    # Truncate to the shortest seed's prefix; index i is the
+                    # i-th eval tick (update_count=eval_interval*i) across
+                    # all seeds. Step values per seed differ in trajectory
+                    # modes (steps=total_env_steps), so we average them at
+                    # each index alongside the y-values.
                     min_len = min(len(h) for h in histories)
-                    steps = [h['steps'] for h in histories[0][:min_len]]
+                    step_matrix = np.stack([
+                        [h['steps'] for h in seed_hist[:min_len]]
+                        for seed_hist in histories
+                    ], axis=0)
+                    steps = step_matrix.mean(axis=0)
                     values = np.stack([
                         [h['exact_V_start'] for h in seed_hist[:min_len]]
                         for seed_hist in histories
@@ -1583,7 +1602,7 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
                 if col_idx == 0:
                     ax.set_ylabel(r'$V^\pi(s_0)$', fontsize=9)
                 if row_idx == len(h_types) - 1:
-                    ax.set_xlabel('update step', fontsize=9)
+                    ax.set_xlabel(x_label, fontsize=9)
                 # Legend on rightmost visible cell of each row
                 if col_idx == len(budgets) - 1:
                     ax.legend(fontsize=7, loc='best')
