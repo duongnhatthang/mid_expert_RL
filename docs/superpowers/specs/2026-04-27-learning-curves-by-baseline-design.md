@@ -87,7 +87,7 @@ for (distance, alpha) in unique_pairs:
         # hide trailing unused axes in this row
 ```
 
-**History-length safety net.** All seeds for the same `(mode, tv, alpha, budget, h_type, dist)` must produce the same number of evaluation points because `eval_interval` and `sample_budget` are deterministic. We assert this in code: if any seed disagrees, raise with a clear message naming the offending config — this would indicate a pkl from a stale run and should not be silently averaged.
+**Ragged-history handling.** In `mode="exact"`, all seeds for the same `(mode, tv, alpha, budget, h_type, dist)` produce the same number of evaluation points because update count = budget exactly. In `hybrid`/`sample` modes the budget bounds *environment* steps, not updates — the total update count per seed varies stochastically, so per-seed history lengths differ by 1–2 entries. We truncate every seed's history to the shortest seed's length before stacking. The retained common prefix is at fixed `eval_interval` multiples so step values align; only the trailing "is_last" entries (which fall on different `update_count` values per seed) get dropped. No warning — this is expected, not corruption.
 
 ## Code placement
 
@@ -114,7 +114,7 @@ No image-diff or visual regression. The math is `mean`/`std` of well-defined arr
 | Risk | Mitigation |
 |------|------------|
 | Pkl entries from older runs may lack `exact_V_start` (pre-explicit-policy refactor) | Skip such entries with a one-line warning; if all seeds for a config are skipped, drop the line entirely from that subplot rather than crashing. |
-| Different seeds disagree on `history` length for the same config | Assert equal lengths; raise with config tuple in the message. Indicates a corrupted/mixed pkl. |
+| Different seeds disagree on `history` length for the same config | Truncate to shortest seed's prefix. Expected in hybrid/sample modes (variable update count per seed). Common prefix has aligned step values; trailing "is_last" entries are dropped. |
 | One row has more budgets than the other (e.g. 4 small, 3 large) | `n_cols = max(...)`; render unused cells as hidden axes (`set_visible(False)`) so the visible cells stay aligned by budget rank. |
 | Capability mode at α=0 has 5 lines; at α>0 has 3 | Group on what's actually in the pkl. No special case needed. |
 | `cap_zeta` results passed in by mistake | Early return; logged at INFO level. |
