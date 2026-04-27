@@ -103,7 +103,7 @@ def test_run_experiment_collects_diagnostics():
         lr=0.1,
         seed=0,
         eval_interval=5,
-        exact_gradient=True,
+        mode="exact",
     )
     assert 'diagnostics' in result
     assert len(result['diagnostics']) == 20  # one per step
@@ -130,7 +130,7 @@ def test_run_experiment_cap_zeta():
         lr=0.1,
         seed=0,
         eval_interval=5,
-        exact_gradient=True,
+        mode="exact",
     )
     assert 'final_mean_reward' in result
     assert result['diagnostics'] is not None
@@ -149,7 +149,7 @@ def test_run_experiment_diagnostics_alpha_zero():
         lr=0.1,
         seed=0,
         eval_interval=5,
-        exact_gradient=True,
+        mode="exact",
     )
     for d in result['diagnostics']:
         assert d['a_mu_l2'] == 0.0

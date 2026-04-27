@@ -60,7 +60,7 @@ PYTHONPATH=. pytest tests/test_run_experiments.py -v
 |-----------|---------|-------------|
 | `--teacher-capacity` | varies | -1=no teacher, 0=random, 1..n_goals=partial/full knowledge |
 | `--alpha` | 0.5 | Convex mixing weight α ∈ [0,1]: 0=vanilla NPG (Q^π only), 1=teacher only (A^μ) |
-| `--sample-budget` | varies | Update steps (exact mode, default) or observations (sample mode) |
+| `--sample-budget` | varies | Update steps (`exact` mode, default) or observations (`hybrid`/`sample` modes) |
 | `--grid-size` | 9 | N×N grid dimensions |
 | `--n-goals` | 3 | Number of goal states |
 | `--horizon` | 10×grid_size | Max episode length |
@@ -80,14 +80,19 @@ Where `Q^π` is the student's exact action-value (computed via Bellman policy ev
 
 **Vanilla NPG** is α=0: `θ += lr · Q^π` (no teacher signal).
 
-A legacy **sample-based mode** (`exact_gradient=False`) is available, using trajectory-based policy gradient with the same convex combination: `eff = (1-α)·Q^π(s,a) + α·A^μ(s,a)`, where the gradient is computed over sampled trajectories. Budget = number of observations in this mode.
+Two trajectory-based alternatives are available via `mode="hybrid"` or `mode="sample"` on `run_experiment`:
+
+- **Hybrid mode** (`mode="hybrid"`): trajectory-based PAV-RL gradient applied at the rollout `(s,a)`, but using the student's *exact* `Q^π(s,a)` (Bellman policy evaluation). Same convex combination: `eff = (1-α)·Q^π(s,a) + α·A^μ(s,a)`. Budget = number of observations.
+- **Sample mode** (`mode="sample"`): trajectory-based PAV-RL gradient applied at the rollout `(s,a)`, using *Monte Carlo* return estimates `G_t` in place of `Q^π`. Budget = number of observations.
+
+`mode="sample"` is the canonical sample-based learner: no exact policy evaluation anywhere in the update path.
 
 ### Module Responsibilities
 
 - **`tabular_prototype/environment.py`** — `GridEnv`: N×N grid with goals (reward=1), traps (reward=0), absorbing states. Student starts at center.
 - **`tabular_prototype/teacher.py`** — Computes fixed `Q^μ(s,a)` and `V^μ(s)` via value iteration based on which goals the teacher "knows" (its capacity). Never updated during training.
 - **`tabular_prototype/student.py`** — `TabularSoftmaxPolicy`: trainable `θ[state, action]` parameters, trajectory collection.
-- **`tabular_prototype/training.py`** — Exact NPG update (`exact_npg_update`), sample-based PAV-RL gradient (`compute_pav_rl_gradient`), exact Q^π via Bellman policy evaluation (`compute_student_qvalues`), state-action visitation tracking, and policy updates.
+- **`tabular_prototype/training.py`** — Exact NPG update (`exact_npg_update`), trajectory-based PAV-RL gradient (`compute_pav_rl_gradient`) which supports both exact Q^π (hybrid mode) and MC returns (sample mode, via `estimate_returns`), exact Q^π via Bellman policy evaluation (`compute_student_qvalues`), state-action visitation tracking, and policy updates.
 - **`tabular_prototype/experiments.py`** — Experiment orchestration: `run_experiment()`, `run_2x2_exploration_experiment()`, `run_learning_curve_experiment()`, `run_experiment_suite()`.
 - **`tabular_prototype/visualization.py`** — Policy grids, advantage heatmaps, learning curves, result bar charts.
 - **`tabular_prototype/config.py`** — Discount factor: `γ = 1 - 1/H` (makes value functions time-invariant).
