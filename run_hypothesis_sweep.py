@@ -1465,6 +1465,139 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                 plt.close(fig)
 
 
+def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
+    """Per-(distance, alpha) learning curves overlaid by teacher baseline.
+
+    Reads per-seed `history` lists from `all_results` (the in-memory form of
+    `<mode>_sweep_results.pkl`), groups by (distance, alpha, horizon_type,
+    sample_budget, teacher_value), averages `exact_V_start` across seeds,
+    and writes one PNG per (distance, alpha) to
+    `<figures_dir>/learning_curves/`.
+
+    Layout: 2 rows (horizon_type small/large) × N cols (budgets ascending).
+    Lines = teacher values. Mean ± 1σ band across seeds.
+
+    `cap_zeta` mode is a no-op (16-line legend reads poorly on a learning
+    curve; cap_zeta has its own dedicated visualisations).
+    """
+    if mode == 'cap_zeta':
+        print("plot_learning_curves: cap_zeta mode — skipping")
+        return
+
+    from collections import defaultdict
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    tcol = _teacher_col(mode)
+    out_dir = os.path.join(figures_dir, 'learning_curves')
+
+    # Group results: (dist, alpha, h_type, budget, teacher_val) -> list of history lists
+    groups = defaultdict(list)
+    for r in all_results:
+        if 'history' not in r or not r['history']:
+            continue
+        # Defensive: skip entries missing exact_V_start (legacy pkls)
+        if 'exact_V_start' not in r['history'][0]:
+            continue
+        key = (r['distance'], r['alpha'], r['horizon_type'],
+               r['sample_budget'], r[tcol])
+        groups[key].append(r['history'])
+
+    if not groups:
+        print("plot_learning_curves: no usable history entries — skipping")
+        return
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Unique (distance, alpha) pairs → one figure each
+    da_pairs = sorted({(k[0], k[1]) for k in groups})
+    h_types = ['small', 'large']
+
+    for dist, alpha in da_pairs:
+        # Budget set per horizon type for this (dist, alpha)
+        budgets_by_h = {
+            h: sorted({k[3] for k in groups
+                       if k[0] == dist and k[1] == alpha and k[2] == h})
+            for h in h_types
+        }
+        n_cols = max(len(budgets_by_h[h]) for h in h_types)
+        if n_cols == 0:
+            continue
+
+        fig, axes = plt.subplots(
+            len(h_types), n_cols,
+            figsize=(4 * n_cols, 3.2 * len(h_types)),
+            squeeze=False,
+        )
+
+        # Teacher values present anywhere in this (dist, alpha) slice
+        teacher_vals_set = {k[4] for k in groups
+                            if k[0] == dist and k[1] == alpha}
+        # Use _sort_teacher_vals via a faux pandas Series-compatible iterable
+        sorted_teachers = _sort_teacher_vals(
+            pd.Series(list(teacher_vals_set)), mode
+        )
+
+        for row_idx, h_type in enumerate(h_types):
+            budgets = budgets_by_h[h_type]
+            for col_idx in range(n_cols):
+                ax = axes[row_idx][col_idx]
+                if col_idx >= len(budgets):
+                    ax.set_visible(False)
+                    continue
+                budget = budgets[col_idx]
+
+                for tv in sorted_teachers:
+                    histories = groups.get(
+                        (dist, alpha, h_type, budget, tv), []
+                    )
+                    if not histories:
+                        continue
+                    lengths = {len(h) for h in histories}
+                    if len(lengths) > 1:
+                        raise ValueError(
+                            f"Inconsistent history lengths {lengths} for "
+                            f"(dist={dist}, alpha={alpha}, h={h_type}, "
+                            f"budget={budget}, teacher={tv}) — pkl may "
+                            f"mix runs."
+                        )
+                    steps = [h['steps'] for h in histories[0]]
+                    values = np.stack([
+                        [h['exact_V_start'] for h in seed_hist]
+                        for seed_hist in histories
+                    ], axis=0)
+                    mean = values.mean(axis=0)
+                    std = values.std(axis=0)
+                    label = _teacher_label(mode, tv)
+                    ax.plot(steps, mean, label=label, linewidth=1.5)
+                    ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+
+                ax.set_title(f'H={h_type}, B={budget}', fontsize=9)
+                ax.grid(True, alpha=0.3)
+                if col_idx == 0:
+                    ax.set_ylabel(r'$V^\pi(s_0)$', fontsize=9)
+                if row_idx == len(h_types) - 1:
+                    ax.set_xlabel('update step', fontsize=9)
+                # Legend on rightmost visible cell of each row
+                if col_idx == len(budgets) - 1:
+                    ax.legend(fontsize=7, loc='best')
+
+        fig.suptitle(
+            f'Learning curve ({mode} sweep) — '
+            f'dist={dist}, ' + rf'$\alpha={alpha}$',
+            fontsize=11,
+        )
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+        out_path = os.path.join(
+            out_dir, f'learning_curve_dist{dist}_alpha{alpha:.2f}.png'
+        )
+        fig.savefig(out_path, dpi=120)
+        plt.close(fig)
+        print(f'Saved {out_path}')
+
+
 def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
     """Consolidated visitation grids + teacher advantage column.
 
