@@ -182,3 +182,52 @@ def test_plot_mc_variance_curve_default_emits_two_pngs(tmp_path, monkeypatch):
             )
 
     plt.close('all')
+
+
+def test_plot_mc_variance_curve_baseline_alpha_none(tmp_path, monkeypatch):
+    """Passing baseline_alpha=None must suppress the α=0 baseline
+    overlay in every emitted figure."""
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+    import run_hypothesis_sweep as sweep
+
+    captured_figures = []
+    original_savefig = Figure.savefig
+
+    def capturing_savefig(self, *args, **kwargs):
+        captured_figures.append(self)
+        return original_savefig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, 'savefig', capturing_savefig)
+
+    sweep.plot_mc_variance_curve(
+        _zeta_results_for_mc_variance(),
+        mode='zeta',
+        figures_dir=str(tmp_path),
+        baseline_alpha=None,
+    )
+
+    assert captured_figures, "expected at least one figure saved"
+    for fig in captured_figures:
+        for ax in fig.get_axes():
+            if not ax.get_visible():
+                continue
+            dashed_black = [
+                line for line in ax.get_lines()
+                if line.get_linestyle() == '--' and line.get_color() == 'black'
+            ]
+            assert not dashed_black, (
+                "expected NO dashed black baseline line when "
+                f"baseline_alpha=None, got {len(dashed_black)}"
+            )
+
+    plt.close('all')
+
+
+def test_plot_mc_variance_curve_cap_zeta_noop(tmp_path):
+    """cap_zeta mode is intentionally unsupported — function returns
+    immediately and writes nothing."""
+    import run_hypothesis_sweep as sweep
+    sweep.plot_mc_variance_curve([], mode='cap_zeta',
+                                  figures_dir=str(tmp_path))
+    assert not list(tmp_path.glob('*.png'))
