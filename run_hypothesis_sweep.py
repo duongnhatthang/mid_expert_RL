@@ -1490,6 +1490,127 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                 plt.close(fig)
 
 
+def plot_advantage_alignment(
+    all_results: list,
+    mode: str,
+    figures_dir: str,
+    *,
+    distance: int = 6,
+    horizon_type: str = 'small',
+    alpha: float = 1.0,
+    budget_rank: int = -2,
+):
+    """Single-cell figure of g^π(t) = E_{a~π}[A^π(s_0,a)·A^μ(s_0,a)].
+
+    Default cell: distance=6, horizon_type='small', alpha=1.0,
+    sample_budget = calibrated budgets[budget_rank=-2] (second-largest).
+    Override any kwarg to retarget. One line per teacher baseline,
+    mean ± 1σ band across seeds. cap_zeta mode is a no-op.
+    """
+    if mode == 'cap_zeta':
+        print("plot_advantage_alignment: cap_zeta mode — skipping")
+        return
+
+    import json
+    import matplotlib.pyplot as plt
+    from collections import defaultdict
+
+    target = {
+        'distance': distance,
+        'horizon_type': horizon_type,
+        'alpha': alpha,
+    }
+
+    training_modes = {r.get('mode', 'exact') for r in all_results
+                      if all(r.get(k) == v for k, v in target.items())}
+    if not training_modes:
+        print("plot_advantage_alignment: no matching runs — skipping")
+        return
+    training_mode = next(iter(training_modes))
+
+    n_goals = 1 if mode == 'zeta' else 3
+    try:
+        calib = json.load(open(_calibration_path_for(training_mode)))
+    except FileNotFoundError:
+        print("plot_advantage_alignment: calibration JSON missing — skipping")
+        return
+    cell = _find_calibration_cell(calib, distance, horizon_type, n_goals)
+    if not cell:
+        print("plot_advantage_alignment: no calibration cell — skipping")
+        return
+    budgets = cell.get('budgets', [])
+    if not budgets or abs(budget_rank) > len(budgets):
+        print("plot_advantage_alignment: budget_rank out of range — skipping")
+        return
+    target['sample_budget'] = budgets[budget_rank]
+
+    matching = [r for r in all_results
+                if all(r.get(k) == v for k, v in target.items())
+                and r['history']
+                and r['history'][0].get('adv_product_s0') is not None]
+    if not matching:
+        print("plot_advantage_alignment: no field-bearing runs — skipping")
+        return
+
+    tcol = _teacher_col(mode)
+    groups = defaultdict(list)
+    for r in matching:
+        groups[r[tcol]].append(r['history'])
+
+    sorted_teachers = _sort_teacher_vals(
+        pd.Series(list(groups.keys())), mode,
+    )
+
+    x_label = 'update step' if training_mode == 'exact' else 'env step'
+
+    os.makedirs(figures_dir, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(7, 4.2))
+    for tv in sorted_teachers:
+        histories = groups[tv]
+        min_len = min(len(h) for h in histories)
+        steps = np.mean([
+            [h['steps'] for h in seed_hist[:min_len]]
+            for seed_hist in histories
+        ], axis=0)
+        values = np.stack([
+            [h['adv_product_s0'] for h in seed_hist[:min_len]]
+            for seed_hist in histories
+        ], axis=0)
+        mean = values.mean(axis=0)
+        std = values.std(axis=0)
+        ax.plot(steps, mean, label=_teacher_label(mode, tv),
+                marker='o', markersize=3, linewidth=1.5)
+        ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+
+    ax.axhline(0, color='black', linewidth=0.8, linestyle=':')
+    ax.set_xlabel(x_label, fontsize=9)
+    ax.set_ylabel(
+        r'$\mathbb{E}_{a \sim \pi^t}[A^{\pi^t}(s_0,a)\,A^\mu(s_0,a)]$',
+        fontsize=9,
+    )
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, loc='best')
+
+    h_val = cell['horizon']
+    fig.suptitle(
+        f'Advantage alignment ({mode} sweep) — '
+        f"dist={distance}, H={h_val} ({horizon_type}), "
+        f"B={target['sample_budget']}, " + rf'$\alpha={alpha}$',
+        fontsize=11,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+    out_path = os.path.join(
+        figures_dir,
+        f'advantage_alignment_dist{distance}_{horizon_type}'
+        f"_B{target['sample_budget']}_alpha{alpha:.2f}.png",
+    )
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    print(f'Saved {out_path}')
+
+
 def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
     """Per-(distance, alpha) learning curves overlaid by teacher baseline.
 
