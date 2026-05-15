@@ -172,7 +172,6 @@ def test_plot_learning_curves_draws_v_star_skyline(tmp_path, monkeypatch):
     """Every visible subplot must carry a black dashed V*(s_0) horizontal line."""
     import matplotlib.pyplot as plt
     from matplotlib.figure import Figure
-    from matplotlib.lines import Line2D
 
     captured_figures = []
     original_savefig = Figure.savefig
