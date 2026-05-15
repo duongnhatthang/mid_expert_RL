@@ -1626,6 +1626,9 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
                 h_label = (f'H={h_val} ({h_type})' if h_val is not None
                            else f'H={h_type}')
                 ax.set_title(f'{h_label}, B={budget}', fontsize=9)
+                # cache built from groups.keys() above; this (dist, h_type)
+                # is guaranteed to exist because we only enter this branch
+                # when budgets_by_h[h_type] is non-empty.
                 v_star = v_star_cache[(dist, h_type)]
                 ax.axhline(
                     v_star, linestyle='--', color='black', linewidth=1.2,
