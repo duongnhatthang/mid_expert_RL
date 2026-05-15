@@ -158,6 +158,9 @@ def run_experiment(
                     ),
                     'unique_sa': 0,
                     'state_entropy': 0.0,
+                    'adv_product_s0': _compute_adv_product_s0(
+                        policy, Q_pi_new, V_pi_new, Q_mu, V_mu, start_idx,
+                    ),
                 })
     else:
         # Trajectory-based modes: budget = number of observations
