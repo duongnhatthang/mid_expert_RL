@@ -132,8 +132,9 @@ def _adv_history(n_points: int, base: float):
 
 def _zeta_results_for_advantage_alignment():
     """Synthetic all_results filling the default cell
-    (distance=6, horizon_type='small', alpha=1.0, B=budgets[-2]).
-    4 zetas × 3 seeds = 12 entries."""
+    (distance=6, horizon_type='small', alpha=1.0, B=budgets[-2]) plus
+    an α=0 baseline cell. 4 zetas × 3 seeds for α=1.0 plus 1 zeta × 3
+    seeds for α=0.0 = 15 entries."""
     import json
     calib = json.load(open('results/calibration.json'))
     cell = next(v for k, v in calib.items()
@@ -142,6 +143,7 @@ def _zeta_results_for_advantage_alignment():
     h_val = cell['horizon']
 
     out = []
+    # Primary α=1.0 cells
     for zeta in [0.0, 0.33, 0.67, 1.0]:
         for seed in [0, 1, 2]:
             out.append({
@@ -155,12 +157,26 @@ def _zeta_results_for_advantage_alignment():
                 'mode': 'exact',
                 'history': _adv_history(4, base=0.05 * zeta + 0.01 * seed),
             })
+    # α=0 baseline cells (one zeta value — they collapse at α=0)
+    for seed in [0, 1, 2]:
+        out.append({
+            'distance': 6,
+            'alpha': 0.0,
+            'horizon_type': 'small',
+            'horizon': h_val,
+            'sample_budget': budget,
+            'zeta': 0.0,
+            'seed': seed,
+            'mode': 'exact',
+            'history': _adv_history(4, base=0.02 + 0.005 * seed),
+        })
     return out
 
 
 def test_plot_advantage_alignment_default_path(tmp_path, monkeypatch):
     """Default invocation must emit exactly one PNG matching the
-    parameterized filename for the default cell."""
+    parameterized filename, AND the figure must contain one dashed
+    black baseline line (α=0 vanilla NPG overlay)."""
     import json
     import matplotlib.pyplot as plt
     from matplotlib.figure import Figure
@@ -195,6 +211,21 @@ def test_plot_advantage_alignment_default_path(tmp_path, monkeypatch):
     assert pngs[0].name == expected_name, \
         f"unexpected filename {pngs[0].name}, expected {expected_name}"
     assert pngs[0].stat().st_size > 1000
+
+    # Baseline overlay assertion: every captured figure must have at
+    # least one dashed black line (the α=0 baseline).
+    for fig in captured_figures:
+        for ax in fig.get_axes():
+            if not ax.get_visible():
+                continue
+            dashed_black = [
+                line for line in ax.get_lines()
+                if line.get_linestyle() == '--' and line.get_color() == 'black'
+            ]
+            assert dashed_black, (
+                "expected at least one dashed black baseline line "
+                "(α=0 vanilla NPG overlay) on the figure"
+            )
 
     plt.close('all')
 
