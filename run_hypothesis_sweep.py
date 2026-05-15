@@ -644,6 +644,55 @@ def _sort_teacher_vals(teacher_series, mode: str):
     return sorted(vals, key=float)
 
 
+def _overlay_baseline_alpha(
+    ax, all_results, mode, tcol, field_name, target, baseline_alpha,
+):
+    """Overlay one α=baseline_alpha vanilla-NPG baseline line on `ax`.
+
+    At α=0 the teacher signal weight is zero so all teacher values are
+    mathematically equivalent. We pick the first teacher value in
+    canonical sort order as a deterministic representative.
+
+    No-op when baseline_alpha is None or no matching results are found.
+    Renders a black dashed line with a light fill_between band, labeled
+    `α={baseline_alpha} (vanilla NPG)`.
+    """
+    if baseline_alpha is None:
+        return
+    from collections import defaultdict
+    baseline_target = {**target, 'alpha': baseline_alpha}
+    matching = [r for r in all_results
+                if all(r.get(k) == v for k, v in baseline_target.items())
+                and r['history']
+                and r['history'][0].get(field_name) is not None]
+    if not matching:
+        return
+
+    groups = defaultdict(list)
+    for r in matching:
+        groups[r[tcol]].append(r['history'])
+    sorted_tvs = _sort_teacher_vals(pd.Series(list(groups.keys())), mode)
+    tv_pick = sorted_tvs[0]
+    histories = groups[tv_pick]
+    min_len = min(len(h) for h in histories)
+    steps = np.mean([
+        [h['steps'] for h in seed_hist[:min_len]]
+        for seed_hist in histories
+    ], axis=0)
+    values = np.stack([
+        [h[field_name] for h in seed_hist[:min_len]]
+        for seed_hist in histories
+    ], axis=0)
+    mean = values.mean(axis=0)
+    std = values.std(axis=0)
+    ax.plot(steps, mean,
+            label=rf'$\alpha={baseline_alpha}$ (vanilla NPG)',
+            color='black', linestyle='--', linewidth=1.5,
+            marker='s', markersize=3)
+    ax.fill_between(steps, mean - std, mean + std,
+                    alpha=0.15, color='black')
+
+
 def _teacher_x_positions(teacher_vals, mode: str):
     """Return numeric x-axis positions for teacher values.
 
