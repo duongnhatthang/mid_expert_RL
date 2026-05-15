@@ -136,16 +136,34 @@ same `adv_product_s0` entry as the exact-mode loop.
 In `run_hypothesis_sweep.py`, near `plot_learning_curves`:
 
 ```python
-def plot_advantage_alignment(all_results: list, mode: str, figures_dir: str):
+def plot_advantage_alignment(
+    all_results: list,
+    mode: str,
+    figures_dir: str,
+    distance: int = 6,
+    horizon_type: str = 'small',
+    alpha: float = 1.0,
+    budget_rank: int = -2,
+):
     """Per-(mode, training_mode) figure of g^π(t) over training.
 
-    Fixed cell: dist=6, h_type='small', alpha=1.0, B=calibrated_budgets[-2]
-    for the (mode, training_mode) of the sweep. One line per teacher
-    baseline, mean ± 1σ band across seeds. Skipped for cap_zeta mode.
+    Default cell: dist=6, h_type='small', alpha=1.0,
+    B=calibrated_budgets[budget_rank=-2] (second-largest) for the
+    (mode, training_mode) of the sweep. Override any of the four
+    cell-defining args to retarget. One line per teacher baseline,
+    mean ± 1σ band across seeds. Skipped for cap_zeta mode.
+
+    `budget_rank` indexes into the calibration JSON's `budgets` list
+    for the matched (distance, horizon_type, n_goals) cell. Default
+    -2 = second-largest. Use -1 for largest, 0 for smallest, etc.
     """
     if mode == 'cap_zeta':
         return
-    target = {'distance': 6, 'horizon_type': 'small', 'alpha': 1.0}
+    target = {
+        'distance': distance,
+        'horizon_type': horizon_type,
+        'alpha': alpha,
+    }
 
     # Determine training_mode from the data (every result row carries 'mode')
     training_modes = {r.get('mode', 'exact') for r in all_results
@@ -154,15 +172,16 @@ def plot_advantage_alignment(all_results: list, mode: str, figures_dir: str):
         return
     training_mode = next(iter(training_modes))
 
-    # Look up second-largest calibrated budget for this cell
-    calib = _load_calibration_for_training_mode(training_mode)
-    # n_goals depends on mode: 1 for zeta, 3 for capability
+    # Resolve budget from calibration JSON by rank
     n_goals = 1 if mode == 'zeta' else 3
-    key = _calibration_key(distance=6, h_type='small', n_goals=n_goals)
-    cell = calib.get(key)
-    if not cell or len(cell.get('budgets', [])) < 2:
+    calib = json.load(open(_calibration_path_for(training_mode)))
+    cell = _find_calibration_cell(calib, distance, horizon_type, n_goals)
+    if not cell:
         return
-    target['sample_budget'] = cell['budgets'][-2]
+    budgets = cell.get('budgets', [])
+    if not budgets or abs(budget_rank) > len(budgets):
+        return
+    target['sample_budget'] = budgets[budget_rank]
 
     # Filter and validate field presence
     matching = [r for r in all_results
@@ -211,14 +230,21 @@ def plot_advantage_alignment(all_results: list, mode: str, figures_dir: str):
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8, loc='best')
 
+    h_val = cell['horizon']
     fig.suptitle(
         f'Advantage alignment ({mode} sweep) — '
-        f"dist=6, H=8 (small), B={cell['budgets'][-2]}, " + r'$\alpha=1.0$',
+        f"dist={distance}, H={h_val} ({horizon_type}), "
+        f"B={target['sample_budget']}, " + rf'$\alpha={alpha}$',
         fontsize=11,
     )
     fig.tight_layout(rect=[0, 0, 1, 0.95])
 
-    out_path = os.path.join(figures_dir, 'advantage_alignment.png')
+    # Filename includes the cell so overrides don't collide
+    out_path = os.path.join(
+        figures_dir,
+        f'advantage_alignment_dist{distance}_{horizon_type}'
+        f"_B{target['sample_budget']}_alpha{alpha:.2f}.png",
+    )
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
     print(f'Saved {out_path}')
@@ -322,21 +348,31 @@ def test_adv_product_s0_recorded_in_history():
 
 ### test_plot_advantage_alignment_emits_png
 
-Build a synthetic `all_results` list with the target cell filled in
-(dist=6, h_type='small', alpha=1.0, sample_budget=34 — second-largest
-exact-mode zeta-ng=1 budget per current calibration.json), 4 zetas, 3
-seeds, history with `adv_product_s0` populated linearly toward a fixed
-value per zeta. Call
-`plot_advantage_alignment(results, mode='zeta', figures_dir=tmp_path)`.
-Assert `tmp_path/advantage_alignment.png` exists with size > 1 KB.
+Build a synthetic `all_results` list with the target cell filled in,
+4 zetas, 3 seeds, history with `adv_product_s0` populated linearly
+toward a fixed value per zeta. The test reads the budget from
+`results/calibration.json` at runtime (rather than hardcoding 34) so
+it stays robust to recalibration:
 
-Note: the calibration-JSON read inside the plot function will look up
-`dist=6_small_ng=1_lr=0.5_grid=9` from `results/calibration.json` — this
-file is already in the repo so the test can rely on it. If the
-calibration entry's `budgets[-2]` shifts in future calibrations, the
-synthetic data needs to update accordingly. The test should read the
-budget from calibration.json at runtime rather than hardcoding 34, to
-stay robust.
+```python
+import json
+calib = json.load(open('results/calibration.json'))
+cell = next(v for k, v in calib.items()
+            if k.startswith('dist=6_small_ng=1_'))
+budget = cell['budgets'][-2]  # second-largest
+# ... build synthetic results with sample_budget=budget ...
+```
+
+Call `plot_advantage_alignment(results, mode='zeta', figures_dir=tmp_path)`
+(no overrides — exercises the defaults). Assert exactly one PNG with
+the parameterized filename
+`advantage_alignment_dist6_small_B{budget}_alpha1.00.png` exists with
+size > 1 KB.
+
+A second test exercises the override path: same synthetic results
+where the data is at a non-default `sample_budget`, called with
+`budget_rank=-1` (largest budget). Assert the figure is emitted at
+that rank's filename.
 
 ### test_plot_advantage_alignment_cap_zeta_noop
 
