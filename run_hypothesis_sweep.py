@@ -86,6 +86,31 @@ def _goal_positions(mode: str):
     return CAP_GOAL_POSITIONS  # both 'capability' and 'cap_zeta' use 3-goal positions
 
 
+def _calibration_path_for(training_mode: str) -> str:
+    """Map training_mode → calibration JSON path.
+
+    'exact' → results/calibration.json
+    'hybrid' → results/calibration_hybrid.json
+    'sample' → results/calibration_sample.json
+    """
+    suffix = '' if training_mode == 'exact' else f'_{training_mode}'
+    return f'results/calibration{suffix}.json'
+
+
+def _find_calibration_cell(calib: dict, distance: int, h_type: str,
+                            n_goals: int):
+    """Locate the calibration entry for (distance, h_type, n_goals).
+
+    Substring-matches on the prefix `f'dist={d}_{h_type}_ng={n_goals}_'`
+    so the call works across both the exact-mode keys (which include lr)
+    and hybrid/sample keys (which don't). Returns None if zero or more
+    than one match is found.
+    """
+    prefix = f'dist={distance}_{h_type}_ng={n_goals}_'
+    matches = [v for k, v in calib.items() if k.startswith(prefix)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _load_calibrated_budgets(mode: str, n_seeds_calib: int = 3,
                                calibration_path: str = None,
                                distances=None):

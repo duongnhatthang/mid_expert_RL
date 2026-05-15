@@ -86,3 +86,27 @@ def test_adv_product_s0_recorded_in_hybrid_history():
         assert 'adv_product_s0' in entry
         assert entry['adv_product_s0'] is not None
         assert np.isfinite(entry['adv_product_s0'])
+
+
+def test_calibration_helpers_find_dist6_small_cell():
+    """The two new helpers wrap calibration-JSON path resolution and
+    per-cell substring matching. Smoke-test against the checked-in
+    results/calibration.json."""
+    import json
+    from run_hypothesis_sweep import (
+        _calibration_path_for, _find_calibration_cell,
+    )
+
+    # exact training mode → results/calibration.json
+    path = _calibration_path_for('exact')
+    assert path.endswith('calibration.json')
+
+    calib = json.load(open(path))
+    cell = _find_calibration_cell(calib, distance=6, h_type='small', n_goals=1)
+    assert cell is not None, "expected one matching cell for dist=6 small ng=1"
+    assert cell['horizon'] == 8
+    assert isinstance(cell['budgets'], list) and len(cell['budgets']) >= 2
+
+    # hybrid training mode → results/calibration_hybrid.json
+    path_h = _calibration_path_for('hybrid')
+    assert path_h.endswith('calibration_hybrid.json')
