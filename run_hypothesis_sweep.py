@@ -1465,6 +1465,214 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                 plt.close(fig)
 
 
+def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
+    """Per-(distance, alpha) learning curves overlaid by teacher baseline.
+
+    Reads per-seed `history` lists from `all_results` (the in-memory form of
+    `<mode>_sweep_results.pkl`), groups by (distance, alpha, horizon_type,
+    sample_budget, teacher_value), averages `exact_V_start` across seeds,
+    and writes one PNG per (distance, alpha) to
+    `<figures_dir>/learning_curves/`.
+
+    Layout: 2 rows (horizon_type small/large) × N cols (budgets ascending).
+    Lines = teacher values. Mean ± 1σ band across seeds.
+
+    `cap_zeta` mode is a no-op (16-line legend reads poorly on a learning
+    curve; cap_zeta has its own dedicated visualisations).
+    """
+    if mode == 'cap_zeta':
+        print("plot_learning_curves: cap_zeta mode — skipping")
+        return
+
+    from collections import defaultdict
+    import matplotlib.pyplot as plt
+    from tabular_prototype.teacher import (
+        build_optimal_policy, evaluate_policy_values,
+    )
+    from tabular_prototype.config import compute_gamma_from_horizon
+
+    tcol = _teacher_col(mode)
+    out_dir = os.path.join(figures_dir, 'learning_curves')
+
+    # Group results: (dist, alpha, h_type, budget, teacher_val) -> list of history lists
+    # Also collect numeric horizon per h_type and the training mode so titles
+    # and axis labels can show numeric H and the right x-axis unit.
+    groups = defaultdict(list)
+    horizon_by_h_type = {}
+    training_modes = set()
+    for r in all_results:
+        if 'history' not in r or not r['history']:
+            continue
+        # Defensive: skip entries missing exact_V_start (legacy pkls)
+        if 'exact_V_start' not in r['history'][0]:
+            continue
+        key = (r['distance'], r['alpha'], r['horizon_type'],
+               r['sample_budget'], r[tcol])
+        groups[key].append(r['history'])
+        if 'horizon' in r:
+            horizon_by_h_type[r['horizon_type']] = r['horizon']
+        if 'mode' in r:
+            training_modes.add(r['mode'])
+
+    # V*(s_0) cache, keyed by (distance, horizon_type). V* depends only on
+    # those two — γ = 1 - 1/H, and the env has deterministic goals + no
+    # traps in the sweep paths. Computed once per unique (dist, h_type)
+    # actually present in the data, not over DISTANCES × HORIZON_TYPES,
+    # so synthetic test data with a subset of distances works without
+    # adjustment.
+    horizons = _get_horizons()
+    goal_pos = _goal_positions(mode)
+    v_star_cache: dict = {}
+    for (dist_k, _alpha_k, h_type_k, _budget_k, _tv_k) in groups:
+        cache_key = (dist_k, h_type_k)
+        if cache_key in v_star_cache:
+            continue
+        h_val = horizons[h_type_k]
+        gamma = compute_gamma_from_horizon(h_val)
+        vstar_env = GridEnv(
+            grid_size=GRID_SIZE, goals=goal_pos[dist_k], horizon=h_val,
+        )
+        pi_star = build_optimal_policy(vstar_env, vstar_env.goals, gamma)
+        _, V_star = evaluate_policy_values(vstar_env, pi_star, gamma)
+        v_star_cache[cache_key] = float(
+            V_star[vstar_env.state_to_idx(vstar_env.start)]
+        )
+
+    # X-axis unit depends on training mode: in exact mode the stored 'steps'
+    # field is update_count; in hybrid/sample it is total environment steps.
+    if training_modes == {'exact'}:
+        x_label = 'update step'
+    elif training_modes and 'exact' not in training_modes:
+        x_label = 'env step'
+    else:
+        # Mixed pkl or missing key: fall back to a generic label
+        x_label = 'step'
+
+    if not groups:
+        print("plot_learning_curves: no usable history entries — skipping")
+        return
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Unique (distance, alpha) pairs → one figure each
+    da_pairs = sorted({(k[0], k[1]) for k in groups})
+    h_types = ['small', 'large']
+
+    for dist, alpha in da_pairs:
+        # Budget set per horizon type for this (dist, alpha)
+        budgets_by_h = {
+            h: sorted({k[3] for k in groups
+                       if k[0] == dist and k[1] == alpha and k[2] == h})
+            for h in h_types
+        }
+        n_cols = max(len(budgets_by_h[h]) for h in h_types)
+        if n_cols == 0:
+            continue
+
+        fig, axes = plt.subplots(
+            len(h_types), n_cols,
+            figsize=(4 * n_cols, 3.2 * len(h_types)),
+            squeeze=False,
+        )
+
+        # Teacher values present anywhere in this (dist, alpha) slice
+        teacher_vals_set = {k[4] for k in groups
+                            if k[0] == dist and k[1] == alpha}
+        # Use _sort_teacher_vals via a faux pandas Series-compatible iterable
+        sorted_teachers = _sort_teacher_vals(
+            pd.Series(list(teacher_vals_set)), mode
+        )
+
+        for row_idx, h_type in enumerate(h_types):
+            budgets = budgets_by_h[h_type]
+            for col_idx in range(n_cols):
+                ax = axes[row_idx][col_idx]
+                if col_idx >= len(budgets):
+                    ax.set_visible(False)
+                    continue
+                budget = budgets[col_idx]
+
+                for tv in sorted_teachers:
+                    histories = groups.get(
+                        (dist, alpha, h_type, budget, tv), []
+                    )
+                    if not histories:
+                        continue
+                    # In hybrid/sample mode, update count per seed varies
+                    # because the budget bounds env steps, not updates.
+                    # Truncate to the shortest seed's prefix; index i is the
+                    # i-th eval tick (update_count=eval_interval*i) across
+                    # all seeds. Step values per seed differ in trajectory
+                    # modes (steps=total_env_steps), so we average them at
+                    # each index alongside the y-values.
+                    min_len = min(len(h) for h in histories)
+                    step_matrix = np.stack([
+                        [h['steps'] for h in seed_hist[:min_len]]
+                        for seed_hist in histories
+                    ], axis=0)
+                    steps = step_matrix.mean(axis=0)
+                    values = np.stack([
+                        [h['exact_V_start'] for h in seed_hist[:min_len]]
+                        for seed_hist in histories
+                    ], axis=0)
+                    mean = values.mean(axis=0)
+                    std = values.std(axis=0)
+                    label = _teacher_label(mode, tv)
+                    ax.plot(steps, mean, label=label, linewidth=1.5,
+                            marker='o', markersize=3)
+                    ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+
+                h_val = horizon_by_h_type.get(h_type)
+                h_label = (f'H={h_val} ({h_type})' if h_val is not None
+                           else f'H={h_type}')
+                ax.set_title(f'{h_label}, B={budget}', fontsize=9)
+                # cache built from groups.keys() above; this (dist, h_type)
+                # is guaranteed to exist because we only enter this branch
+                # when budgets_by_h[h_type] is non-empty.
+                v_star = v_star_cache[(dist, h_type)]
+                ax.axhline(
+                    v_star, linestyle='--', color='black', linewidth=1.2,
+                    label=rf'$V^*(s_0)={v_star:.3f}$',
+                )
+                ax.grid(True, alpha=0.3)
+                if col_idx == 0:
+                    ax.set_ylabel(r'$V^\pi(s_0)$', fontsize=9)
+                if row_idx == len(h_types) - 1:
+                    ax.set_xlabel(x_label, fontsize=9)
+                # Legend on rightmost visible cell of each row
+                if col_idx == len(budgets) - 1:
+                    ax.legend(fontsize=7, loc='best')
+
+        fig.suptitle(
+            f'Learning curve ({mode} sweep) — '
+            f'dist={dist}, ' + rf'$\alpha={alpha}$',
+            fontsize=11, y=0.985,
+        )
+        note = (
+            "Cells may be missing when no seed completed ≥1 evaluation "
+            "tick (budget < eval_interval)."
+        )
+        if training_modes != {'exact'}:
+            note += (
+                " Lines for different baselines start at different update "
+                "steps because trajectory length varies stochastically: "
+                "equal env-step budgets yield different update counts per "
+                "baseline."
+            )
+        fig.text(
+            0.5, 0.945, note,
+            ha='center', va='top', fontsize=7.5, color='dimgray', wrap=True,
+        )
+        fig.tight_layout(rect=[0, 0, 1, 0.92])
+
+        out_path = os.path.join(
+            out_dir, f'learning_curve_dist{dist}_alpha{alpha:.2f}.png'
+        )
+        fig.savefig(out_path, dpi=120)
+        plt.close(fig)
+        print(f'Saved {out_path}')
+
+
 def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
     """Consolidated visitation grids + teacher advantage column.
 
@@ -1637,6 +1845,12 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 left=0.14, right=0.80, bottom=0.04, top=0.88,
                 wspace=0.10, hspace=0.25)
 
+            # Pull axes up tight against the suptitle BEFORE reading their
+            # positions for any figure-coord artist (row labels, band labels,
+            # colorbars, separators) — otherwise subplots_adjust afterwards
+            # moves the axes but leaves figure-coord artists misaligned.
+            fig.subplots_adjust(top=1.0 - 1.0 / fig_h)
+
             # Use fig.text (not set_ylabel) for row labels so they render reliably
             # in dense grids. Position each label just left of the first column.
             for bi, budget in enumerate(budget_vals):
@@ -1658,12 +1872,6 @@ def plot_visitation_grids(all_results: list, mode: str, figures_dir: str):
                 fig.text(0.015, y_center, rf'$T={budget}$',
                          ha='left', va='center',
                          fontsize=11, fontweight='bold')
-
-            # Pull axes up tight against the suptitle BEFORE reading their
-            # positions for colorbars / separators — otherwise subplots_adjust
-            # afterwards moves the axes but leaves the figure-coord artists
-            # misaligned.
-            fig.subplots_adjust(top=1.0 - 1.0 / fig_h)
 
             # Per-budget visit colorbars precisely aligned with each budget band.
             # Three colorbar columns are spaced so tick labels don't collide:
@@ -2291,6 +2499,9 @@ def main():
     if all_results is not None:
         print("\nGenerating visitation grids...")
         plot_visitation_grids(all_results, args.mode, figures_dir)
+
+        print("\nGenerating learning curves...")
+        plot_learning_curves(all_results, args.mode, figures_dir)
 
         print("\nGenerating diagnostic plots...")
         _plot_sweep_diagnostics(all_results, args.mode, figures_dir)
