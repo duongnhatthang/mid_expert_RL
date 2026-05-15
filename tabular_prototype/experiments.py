@@ -22,6 +22,20 @@ from .training import (
 from .visualization import visualize_state_visitation, visualize_visitation_comparison_grid
 
 
+def _compute_adv_product_s0(policy, Q_pi, V_pi, Q_mu, V_mu, start_idx):
+    """E_{a ~ π}[A^π(s_0,a) · A^μ(s_0,a)] at s_0.
+
+    Returns None when teacher is absent (Q_mu / V_mu is None) so the
+    'no-teacher' state is distinguishable from a numeric zero downstream.
+    """
+    if Q_mu is None or V_mu is None:
+        return None
+    probs = policy.get_probs(start_idx)
+    A_pi = Q_pi[start_idx] - V_pi[start_idx]
+    A_mu = Q_mu[start_idx] - V_mu[start_idx]
+    return float(np.sum(probs * A_pi * A_mu))
+
+
 VALID_MODES = ("exact", "hybrid", "sample")
 
 
