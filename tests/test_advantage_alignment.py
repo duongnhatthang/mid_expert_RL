@@ -197,3 +197,56 @@ def test_plot_advantage_alignment_default_path(tmp_path, monkeypatch):
     assert pngs[0].stat().st_size > 1000
 
     plt.close('all')
+
+
+def test_plot_advantage_alignment_override_budget_rank(tmp_path):
+    """Passing budget_rank=-1 selects the largest budget; filename
+    parameterizes on the resolved budget."""
+    import json
+    import matplotlib.pyplot as plt
+    import run_hypothesis_sweep as sweep
+
+    calib = json.load(open('results/calibration.json'))
+    cell = next(v for k, v in calib.items()
+                if k.startswith('dist=6_small_ng=1_'))
+    largest_budget = cell['budgets'][-1]
+    h_val = cell['horizon']
+
+    # Synthetic data at the LARGEST budget so the override matches it.
+    results = []
+    for zeta in [0.0, 0.33, 0.67, 1.0]:
+        for seed in [0, 1, 2]:
+            results.append({
+                'distance': 6,
+                'alpha': 1.0,
+                'horizon_type': 'small',
+                'horizon': h_val,
+                'sample_budget': largest_budget,
+                'zeta': zeta,
+                'seed': seed,
+                'mode': 'exact',
+                'history': _adv_history(4, base=0.05 * zeta + 0.01 * seed),
+            })
+
+    sweep.plot_advantage_alignment(
+        results, mode='zeta', figures_dir=str(tmp_path),
+        budget_rank=-1,
+    )
+
+    expected = (
+        f'advantage_alignment_dist6_small_B{largest_budget}_alpha1.00.png'
+    )
+    pngs = list(tmp_path.glob('*.png'))
+    assert len(pngs) == 1, f"expected 1 PNG, got {[p.name for p in pngs]}"
+    assert pngs[0].name == expected
+
+    plt.close('all')
+
+
+def test_plot_advantage_alignment_cap_zeta_noop(tmp_path):
+    """cap_zeta mode is intentionally unsupported — function returns
+    immediately and writes nothing."""
+    import run_hypothesis_sweep as sweep
+    sweep.plot_advantage_alignment([], mode='cap_zeta',
+                                    figures_dir=str(tmp_path))
+    assert not list(tmp_path.glob('*.png'))
