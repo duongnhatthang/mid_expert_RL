@@ -2648,6 +2648,7 @@ def main():
 
         print("\nGenerating learning curves...")
         plot_learning_curves(all_results, args.mode, figures_dir)
+        plot_advantage_alignment(all_results, args.mode, figures_dir)
 
         print("\nGenerating diagnostic plots...")
         _plot_sweep_diagnostics(all_results, args.mode, figures_dir)
