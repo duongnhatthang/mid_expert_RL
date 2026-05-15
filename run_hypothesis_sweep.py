@@ -453,10 +453,21 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
     # Build configs with per-(dist, h_type) budgets
     configs = []
     all_budget_sets = set()
+    # At alpha=0 the teacher signal is weighted to zero so only one
+    # canonical run is needed; the rest are .copy()'d below. Pick a
+    # teacher value whose Q_mu/V_mu are defined so adv_product_s0 (and
+    # any other metric that touches A^mu) is recorded as a finite number
+    # rather than None. For capability mode, c=-1 means "no teacher" =>
+    # Q_mu=None => adv_product_s0=None, which breaks the alpha=0
+    # baseline overlay in plot_advantage_alignment / plot_mc_variance_curve.
+    canonical_alpha_zero_tv = next(
+        (tv for tv in teacher_values if tv != -1),
+        teacher_values[0],
+    )
     for tv, alpha, h_type, dist, seed in itertools.product(
         teacher_values, ALPHA_VALUES, HORIZON_TYPES, distances, range(n_seeds)
     ):
-        if alpha == 0.0 and tv != teacher_values[0]:
+        if alpha == 0.0 and tv != canonical_alpha_zero_tv:
             continue
 
         # Cap=0 with any zeta is always uniform, skip duplicates
