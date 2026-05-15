@@ -203,6 +203,86 @@ def test_plot_learning_curves_draws_v_star_skyline(tmp_path, monkeypatch):
     plt.close('all')
 
 
+def test_plot_learning_curves_draws_v_star_skyline_capability(tmp_path, monkeypatch):
+    """Capability mode must also draw the V*(s_0) skyline on every subplot.
+
+    Guards against regressions in the 3-goal CAP_GOAL_POSITIONS lookup path
+    that would otherwise be silently ignored by file-existence-only tests.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+
+    captured_figures = []
+    original_savefig = Figure.savefig
+
+    def capturing_savefig(self, *args, **kwargs):
+        captured_figures.append(self)
+        return original_savefig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, 'savefig', capturing_savefig)
+
+    sweep.plot_learning_curves(_capability_results(), mode='capability',
+                               figures_dir=str(tmp_path))
+
+    assert captured_figures, "expected at least one figure saved"
+
+    for fig in captured_figures:
+        for ax in fig.get_axes():
+            if not ax.get_visible():
+                continue
+            dashed_black = [
+                line for line in ax.get_lines()
+                if line.get_linestyle() == '--' and line.get_color() == 'black'
+            ]
+            assert dashed_black, (
+                f"axes titled {ax.get_title()!r} missing a black dashed "
+                f"V*(s_0) line"
+            )
+
+    plt.close('all')
+
+
+def test_plot_learning_curves_note_omits_trajectory_sentence_in_exact_mode(
+    tmp_path, monkeypatch
+):
+    """In pure exact mode (no trajectory-length variance), the note's
+    second sentence about per-baseline x-position drift would be
+    misleading. It must be suppressed."""
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+
+    # Tag every result with mode='exact' so plot_learning_curves sees
+    # training_modes == {'exact'}.
+    results = _zeta_results()
+    for r in results:
+        r['mode'] = 'exact'
+
+    captured_figures = []
+    original_savefig = Figure.savefig
+
+    def capturing_savefig(self, *args, **kwargs):
+        captured_figures.append(self)
+        return original_savefig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, 'savefig', capturing_savefig)
+
+    sweep.plot_learning_curves(results, mode='zeta',
+                               figures_dir=str(tmp_path))
+
+    assert captured_figures, "expected at least one figure saved"
+
+    for fig in captured_figures:
+        all_text = ' '.join(t.get_text() for t in fig.texts)
+        assert 'budget < eval_interval' in all_text, (
+            "first sentence of note must still be present in exact mode"
+        )
+        assert 'trajectory length varies stochastically' not in all_text, (
+            "second sentence must be suppressed when training_modes == {'exact'}"
+        )
+
+    plt.close('all')
+
+
 def test_plot_learning_curves_includes_explanation_note(tmp_path, monkeypatch):
     """Every figure must carry the suptitle note explaining missing cells
     and per-baseline x-position differences."""

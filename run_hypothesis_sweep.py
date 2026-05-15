@@ -1648,13 +1648,19 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
             f'dist={dist}, ' + rf'$\alpha={alpha}$',
             fontsize=11, y=0.985,
         )
-        fig.text(
-            0.5, 0.945,
+        note = (
             "Cells may be missing when no seed completed ≥1 evaluation "
-            "tick (budget < eval_interval). Lines for different baselines "
-            "start at different update steps because trajectory length "
-            "varies stochastically: equal env-step budgets yield different "
-            "update counts per baseline.",
+            "tick (budget < eval_interval)."
+        )
+        if training_modes != {'exact'}:
+            note += (
+                " Lines for different baselines start at different update "
+                "steps because trajectory length varies stochastically: "
+                "equal env-step budgets yield different update counts per "
+                "baseline."
+            )
+        fig.text(
+            0.5, 0.945, note,
             ha='center', va='top', fontsize=7.5, color='dimgray', wrap=True,
         )
         fig.tight_layout(rect=[0, 0, 1, 0.92])
