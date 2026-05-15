@@ -161,6 +161,8 @@ def run_experiment(
                     'adv_product_s0': _compute_adv_product_s0(
                         policy, Q_pi_new, V_pi_new, Q_mu, V_mu, start_idx,
                     ),
+                    'mc_var_undiscounted': eval_results['std_reward'] ** 2,
+                    'mc_var_discounted': eval_results['std_reward_discounted'] ** 2,
                 })
     else:
         # Trajectory-based modes: budget = number of observations
@@ -278,6 +280,8 @@ def run_experiment(
                     'adv_product_s0': _compute_adv_product_s0(
                         policy, Q_pi_new, V_pi_new, Q_mu, V_mu, start_idx,
                     ),
+                    'mc_var_undiscounted': eval_results['std_reward'] ** 2,
+                    'mc_var_discounted': eval_results['std_reward_discounted'] ** 2,
                 })
 
     # In exact mode, collect visitation from the final policy via evaluation trajectories
