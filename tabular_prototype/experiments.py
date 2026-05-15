@@ -222,7 +222,7 @@ def run_experiment(
             _, V_pi_qpi = compute_student_qvalues(env, policy_qpi_only, gamma)
             delta_v_qpi = float(V_pi_qpi[start_idx]) - V_before
 
-            _, V_pi_new = compute_student_qvalues(env, policy, gamma)
+            Q_pi_new, V_pi_new = compute_student_qvalues(env, policy, gamma)
             delta_v_total = float(V_pi_new[start_idx]) - V_before
             delta_v_amu = delta_v_total - delta_v_qpi
 
@@ -275,6 +275,9 @@ def run_experiment(
                     ),
                     'unique_sa': vis_m['unique_sa'],
                     'state_entropy': vis_m['state_entropy'],
+                    'adv_product_s0': _compute_adv_product_s0(
+                        policy, Q_pi_new, V_pi_new, Q_mu, V_mu, start_idx,
+                    ),
                 })
 
     # In exact mode, collect visitation from the final policy via evaluation trajectories
