@@ -258,7 +258,11 @@ def evaluate_policy(
     n_episodes: int, rng: np.random.Generator
 ) -> Dict[str, float]:
     """Evaluate policy performance with absorption state support."""
+    from .config import compute_gamma_from_horizon
+    gamma = compute_gamma_from_horizon(env.horizon)
+
     total_rewards = []
+    discounted_returns = []
     goal_reached = []
     episode_lengths = []
     trap_reached = []
@@ -266,6 +270,8 @@ def evaluate_policy(
     for _ in range(n_episodes):
         state = env.reset()
         episode_reward = 0.0
+        discounted_return = 0.0
+        gamma_t = 1.0
         reached_goal = False
         reached_trap = False
         steps = 0
@@ -277,6 +283,8 @@ def evaluate_policy(
             next_state, reward, done = env.step(state, action, rng)
 
             episode_reward += reward
+            discounted_return += gamma_t * reward
+            gamma_t *= gamma
             steps += 1
 
             if next_state in env._goals_set:
@@ -289,14 +297,17 @@ def evaluate_policy(
                 break
 
         total_rewards.append(episode_reward)
+        discounted_returns.append(discounted_return)
         goal_reached.append(reached_goal)
         trap_reached.append(reached_trap)
         episode_lengths.append(steps)
 
     return {
-        'mean_reward': np.mean(total_rewards),
-        'std_reward': np.std(total_rewards),
-        'goal_rate': np.mean(goal_reached),
-        'trap_rate': np.mean(trap_reached),
-        'mean_episode_length': np.mean(episode_lengths)
+        'mean_reward': float(np.mean(total_rewards)),
+        'std_reward': float(np.std(total_rewards)),
+        'mean_reward_discounted': float(np.mean(discounted_returns)),
+        'std_reward_discounted': float(np.std(discounted_returns)),
+        'goal_rate': float(np.mean(goal_reached)),
+        'trap_rate': float(np.mean(trap_reached)),
+        'mean_episode_length': float(np.mean(episode_lengths)),
     }

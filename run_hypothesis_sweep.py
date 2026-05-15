@@ -86,6 +86,31 @@ def _goal_positions(mode: str):
     return CAP_GOAL_POSITIONS  # both 'capability' and 'cap_zeta' use 3-goal positions
 
 
+def _calibration_path_for(training_mode: str) -> str:
+    """Map training_mode → calibration JSON path.
+
+    'exact' → results/calibration.json
+    'hybrid' → results/calibration_hybrid.json
+    'sample' → results/calibration_sample.json
+    """
+    suffix = '' if training_mode == 'exact' else f'_{training_mode}'
+    return f'results/calibration{suffix}.json'
+
+
+def _find_calibration_cell(calib: dict, distance: int, h_type: str,
+                            n_goals: int):
+    """Locate the calibration entry for (distance, h_type, n_goals).
+
+    Substring-matches on the prefix `f'dist={d}_{h_type}_ng={n_goals}_'`
+    so the call works across both the exact-mode keys (which include lr)
+    and hybrid/sample keys (which don't). Returns None if zero or more
+    than one match is found.
+    """
+    prefix = f'dist={distance}_{h_type}_ng={n_goals}_'
+    matches = [v for k, v in calib.items() if k.startswith(prefix)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _load_calibrated_budgets(mode: str, n_seeds_calib: int = 3,
                                calibration_path: str = None,
                                distances=None):
@@ -428,10 +453,21 @@ def run_sweep(mode: str, output_dir: str, n_seeds: int, n_workers: int = 1,
     # Build configs with per-(dist, h_type) budgets
     configs = []
     all_budget_sets = set()
+    # At alpha=0 the teacher signal is weighted to zero so only one
+    # canonical run is needed; the rest are .copy()'d below. Pick a
+    # teacher value whose Q_mu/V_mu are defined so adv_product_s0 (and
+    # any other metric that touches A^mu) is recorded as a finite number
+    # rather than None. For capability mode, c=-1 means "no teacher" =>
+    # Q_mu=None => adv_product_s0=None, which breaks the alpha=0
+    # baseline overlay in plot_advantage_alignment / plot_mc_variance_curve.
+    canonical_alpha_zero_tv = next(
+        (tv for tv in teacher_values if tv != -1),
+        teacher_values[0],
+    )
     for tv, alpha, h_type, dist, seed in itertools.product(
         teacher_values, ALPHA_VALUES, HORIZON_TYPES, distances, range(n_seeds)
     ):
-        if alpha == 0.0 and tv != teacher_values[0]:
+        if alpha == 0.0 and tv != canonical_alpha_zero_tv:
             continue
 
         # Cap=0 with any zeta is always uniform, skip duplicates
@@ -617,6 +653,55 @@ def _sort_teacher_vals(teacher_series, mode: str):
             return (int(parts[0]), float(parts[1]))
         return sorted(vals, key=_key)
     return sorted(vals, key=float)
+
+
+def _overlay_baseline_alpha(
+    ax, all_results, mode, tcol, field_name, target, baseline_alpha,
+):
+    """Overlay one α=baseline_alpha vanilla-NPG baseline line on `ax`.
+
+    At α=0 the teacher signal weight is zero so all teacher values are
+    mathematically equivalent. We pick the first teacher value in
+    canonical sort order as a deterministic representative.
+
+    No-op when baseline_alpha is None or no matching results are found.
+    Renders a black dashed line with a light fill_between band, labeled
+    `α={baseline_alpha} (vanilla NPG)`.
+    """
+    if baseline_alpha is None:
+        return
+    from collections import defaultdict
+    baseline_target = {**target, 'alpha': baseline_alpha}
+    matching = [r for r in all_results
+                if all(r.get(k) == v for k, v in baseline_target.items())
+                and r['history']
+                and r['history'][0].get(field_name) is not None]
+    if not matching:
+        return
+
+    groups = defaultdict(list)
+    for r in matching:
+        groups[r[tcol]].append(r['history'])
+    sorted_tvs = _sort_teacher_vals(pd.Series(list(groups.keys())), mode)
+    tv_pick = sorted_tvs[0]
+    histories = groups[tv_pick]
+    min_len = min(len(h) for h in histories)
+    steps = np.mean([
+        [h['steps'] for h in seed_hist[:min_len]]
+        for seed_hist in histories
+    ], axis=0)
+    values = np.stack([
+        [h[field_name] for h in seed_hist[:min_len]]
+        for seed_hist in histories
+    ], axis=0)
+    mean = values.mean(axis=0)
+    std = values.std(axis=0)
+    ax.plot(steps, mean,
+            label=rf'$\alpha={baseline_alpha}$ (vanilla NPG)',
+            color='black', linestyle='--', linewidth=1.5,
+            marker='s', markersize=3)
+    ax.fill_between(steps, mean - std, mean + std,
+                    alpha=0.15, color='black')
 
 
 def _teacher_x_positions(teacher_vals, mode: str):
@@ -1463,6 +1548,274 @@ def plot_visitation_grids_cap_zeta(all_results: list, figures_dir: str):
                     f'cap_zeta_visit_dist{dist}_{h_type}_alpha{alpha}.png')
                 plt.savefig(save_path, dpi=150, bbox_inches='tight')
                 plt.close(fig)
+
+
+def plot_advantage_alignment(
+    all_results: list,
+    mode: str,
+    figures_dir: str,
+    *,
+    distance: int = 6,
+    horizon_type: str = 'small',
+    alpha: float = 1.0,
+    baseline_alpha: float = 0.0,
+    budget_rank: int = -2,
+):
+    """Single-cell figure of g^π(t) = E_{a~π}[A^π(s_0,a)·A^μ(s_0,a)].
+
+    Default cell: distance=6, horizon_type='small', alpha=1.0,
+    sample_budget = calibrated budgets[budget_rank=-2] (second-largest).
+    Override any kwarg to retarget. One line per teacher baseline,
+    mean ± 1σ band across seeds. cap_zeta mode is a no-op.
+    """
+    if mode == 'cap_zeta':
+        print("plot_advantage_alignment: cap_zeta mode — skipping")
+        return
+
+    import json
+    import matplotlib.pyplot as plt
+    from collections import defaultdict
+
+    target = {
+        'distance': distance,
+        'horizon_type': horizon_type,
+        'alpha': alpha,
+    }
+
+    training_modes = {r.get('mode', 'exact') for r in all_results
+                      if all(r.get(k) == v for k, v in target.items())}
+    if not training_modes:
+        print("plot_advantage_alignment: no matching runs — skipping")
+        return
+    training_mode = next(iter(training_modes))
+
+    n_goals = 1 if mode == 'zeta' else 3
+    try:
+        calib = json.load(open(_calibration_path_for(training_mode)))
+    except FileNotFoundError:
+        print("plot_advantage_alignment: calibration JSON missing — skipping")
+        return
+    cell = _find_calibration_cell(calib, distance, horizon_type, n_goals)
+    if not cell:
+        print("plot_advantage_alignment: no calibration cell — skipping")
+        return
+    budgets = cell.get('budgets', [])
+    if not budgets or abs(budget_rank) > len(budgets):
+        print("plot_advantage_alignment: budget_rank out of range — skipping")
+        return
+    target['sample_budget'] = budgets[budget_rank]
+
+    matching = [r for r in all_results
+                if all(r.get(k) == v for k, v in target.items())
+                and r['history']
+                and r['history'][0].get('adv_product_s0') is not None]
+    if not matching:
+        print("plot_advantage_alignment: no field-bearing runs — skipping")
+        return
+
+    tcol = _teacher_col(mode)
+    groups = defaultdict(list)
+    for r in matching:
+        groups[r[tcol]].append(r['history'])
+
+    sorted_teachers = _sort_teacher_vals(
+        pd.Series(list(groups.keys())), mode,
+    )
+
+    x_label = 'update step' if training_mode == 'exact' else 'env step'
+
+    os.makedirs(figures_dir, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(7, 4.2))
+    for tv in sorted_teachers:
+        histories = groups[tv]
+        min_len = min(len(h) for h in histories)
+        steps = np.mean([
+            [h['steps'] for h in seed_hist[:min_len]]
+            for seed_hist in histories
+        ], axis=0)
+        values = np.stack([
+            [h['adv_product_s0'] for h in seed_hist[:min_len]]
+            for seed_hist in histories
+        ], axis=0)
+        mean = values.mean(axis=0)
+        std = values.std(axis=0)
+        ax.plot(steps, mean, label=_teacher_label(mode, tv),
+                marker='o', markersize=3, linewidth=1.5)
+        ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+
+    _overlay_baseline_alpha(
+        ax, all_results, mode, tcol, 'adv_product_s0', target, baseline_alpha,
+    )
+    ax.axhline(0, color='black', linewidth=0.8, linestyle=':')
+    ax.set_xlabel(x_label, fontsize=9)
+    ax.set_ylabel(
+        r'$\mathbb{E}_{a \sim \pi^t}[A^{\pi^t}(s_0,a)\,A^\mu(s_0,a)]$',
+        fontsize=9,
+    )
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, loc='best')
+
+    h_val = cell['horizon']
+    fig.suptitle(
+        f'Advantage alignment ({mode} sweep) — '
+        f"dist={distance}, H={h_val} ({horizon_type}), "
+        f"B={target['sample_budget']}, " + rf'$\alpha={alpha}$',
+        fontsize=11,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+    out_path = os.path.join(
+        figures_dir,
+        f'advantage_alignment_dist{distance}_{horizon_type}'
+        f"_B{target['sample_budget']}_alpha{alpha:.2f}.png",
+    )
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    print(f'Saved {out_path}')
+
+
+def plot_mc_variance_curve(
+    all_results: list,
+    mode: str,
+    figures_dir: str,
+    *,
+    distance: int = 6,
+    horizon_type: str = 'small',
+    alpha: float = 1.0,
+    baseline_alpha: float = 0.0,
+    budget_rank: int = -2,
+):
+    """Two-PNG single-cell figure of trajectory-return variance.
+
+    Emits one PNG for undiscounted variance and one for discounted
+    variance. Default cell: distance=6, horizon_type='small',
+    alpha=1.0, sample_budget = calibrated budgets[budget_rank=-2].
+    Override any kwarg to retarget. One line per teacher baseline,
+    mean ± 1σ band across seeds. α=0 vanilla-NPG baseline overlay is
+    added unless baseline_alpha=None. cap_zeta mode is a no-op.
+    """
+    if mode == 'cap_zeta':
+        print("plot_mc_variance_curve: cap_zeta mode — skipping")
+        return
+
+    import json
+    import matplotlib.pyplot as plt
+    from collections import defaultdict
+
+    target = {
+        'distance': distance,
+        'horizon_type': horizon_type,
+        'alpha': alpha,
+    }
+
+    training_modes = {r.get('mode', 'exact') for r in all_results
+                      if all(r.get(k) == v for k, v in target.items())}
+    if not training_modes:
+        print("plot_mc_variance_curve: no matching runs — skipping")
+        return
+    training_mode = next(iter(training_modes))
+
+    n_goals = 1 if mode == 'zeta' else 3
+    try:
+        calib = json.load(open(_calibration_path_for(training_mode)))
+    except FileNotFoundError:
+        print("plot_mc_variance_curve: calibration JSON missing — skipping")
+        return
+    cell = _find_calibration_cell(calib, distance, horizon_type, n_goals)
+    if not cell:
+        print("plot_mc_variance_curve: no calibration cell — skipping")
+        return
+    budgets = cell.get('budgets', [])
+    if not budgets or abs(budget_rank) > len(budgets):
+        print("plot_mc_variance_curve: budget_rank out of range — skipping")
+        return
+    target['sample_budget'] = budgets[budget_rank]
+    h_val = cell['horizon']
+
+    tcol = _teacher_col(mode)
+    x_label = 'update step' if training_mode == 'exact' else 'env step'
+
+    os.makedirs(figures_dir, exist_ok=True)
+
+    panels = [
+        ('mc_var_undiscounted',
+         r'$\mathrm{Var}_{\mathrm{MC}}[G]$ (undiscounted)',
+         'Undiscounted'),
+        ('mc_var_discounted',
+         r'$\mathrm{Var}_{\mathrm{MC}}[G]$ (discounted)',
+         'Discounted'),
+    ]
+
+    # Bail early if NEITHER field has data — avoid emitting an empty figure.
+    panel_data = []
+    for field_name, y_label, panel_title in panels:
+        matching = [r for r in all_results
+                    if all(r.get(k) == v for k, v in target.items())
+                    and r['history']
+                    and r['history'][0].get(field_name) is not None]
+        panel_data.append((field_name, y_label, panel_title, matching))
+    if not any(m for _, _, _, m in panel_data):
+        print("plot_mc_variance_curve: no field-bearing runs — skipping")
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.4))
+    for ax, (field_name, y_label, panel_title, matching) in zip(axes, panel_data):
+        if not matching:
+            ax.set_visible(False)
+            continue
+
+        groups = defaultdict(list)
+        for r in matching:
+            groups[r[tcol]].append(r['history'])
+
+        sorted_teachers = _sort_teacher_vals(
+            pd.Series(list(groups.keys())), mode,
+        )
+
+        for tv in sorted_teachers:
+            histories = groups[tv]
+            min_len = min(len(h) for h in histories)
+            steps = np.mean([
+                [h['steps'] for h in seed_hist[:min_len]]
+                for seed_hist in histories
+            ], axis=0)
+            values = np.stack([
+                [h[field_name] for h in seed_hist[:min_len]]
+                for seed_hist in histories
+            ], axis=0)
+            mean = values.mean(axis=0)
+            std = values.std(axis=0)
+            ax.plot(steps, mean, label=_teacher_label(mode, tv),
+                    marker='o', markersize=3, linewidth=1.5)
+            ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+
+        _overlay_baseline_alpha(
+            ax, all_results, mode, tcol, field_name, target, baseline_alpha,
+        )
+
+        ax.set_title(panel_title, fontsize=10)
+        ax.set_xlabel(x_label, fontsize=9)
+        ax.set_ylabel(y_label, fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8, loc='best')
+
+    fig.suptitle(
+        f'MC return variance ({mode} sweep) — '
+        f"dist={distance}, H={h_val} ({horizon_type}), "
+        f"B={target['sample_budget']}, " + rf'$\alpha={alpha}$',
+        fontsize=11,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+
+    out_path = os.path.join(
+        figures_dir,
+        f'mc_variance_dist{distance}_{horizon_type}'
+        f"_B{target['sample_budget']}_alpha{alpha:.2f}.png",
+    )
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    print(f'Saved {out_path}')
 
 
 def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
@@ -2502,6 +2855,8 @@ def main():
 
         print("\nGenerating learning curves...")
         plot_learning_curves(all_results, args.mode, figures_dir)
+        plot_advantage_alignment(all_results, args.mode, figures_dir)
+        plot_mc_variance_curve(all_results, args.mode, figures_dir)
 
         print("\nGenerating diagnostic plots...")
         _plot_sweep_diagnostics(all_results, args.mode, figures_dir)

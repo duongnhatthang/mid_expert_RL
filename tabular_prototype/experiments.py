@@ -22,6 +22,20 @@ from .training import (
 from .visualization import visualize_state_visitation, visualize_visitation_comparison_grid
 
 
+def _compute_adv_product_s0(policy, Q_pi, V_pi, Q_mu, V_mu, start_idx):
+    """E_{a ~ π}[A^π(s_0,a) · A^μ(s_0,a)] at s_0.
+
+    Returns None when teacher is absent (Q_mu / V_mu is None) so the
+    'no-teacher' state is distinguishable from a numeric zero downstream.
+    """
+    if Q_mu is None or V_mu is None:
+        return None
+    probs = policy.get_probs(start_idx)
+    A_pi = Q_pi[start_idx] - V_pi[start_idx]
+    A_mu = Q_mu[start_idx] - V_mu[start_idx]
+    return float(np.sum(probs * A_pi * A_mu))
+
+
 VALID_MODES = ("exact", "hybrid", "sample")
 
 
@@ -144,6 +158,11 @@ def run_experiment(
                     ),
                     'unique_sa': 0,
                     'state_entropy': 0.0,
+                    'adv_product_s0': _compute_adv_product_s0(
+                        policy, Q_pi_new, V_pi_new, Q_mu, V_mu, start_idx,
+                    ),
+                    'mc_var_undiscounted': eval_results['std_reward'] ** 2,
+                    'mc_var_discounted': eval_results['std_reward_discounted'] ** 2,
                 })
     else:
         # Trajectory-based modes: budget = number of observations
@@ -205,7 +224,7 @@ def run_experiment(
             _, V_pi_qpi = compute_student_qvalues(env, policy_qpi_only, gamma)
             delta_v_qpi = float(V_pi_qpi[start_idx]) - V_before
 
-            _, V_pi_new = compute_student_qvalues(env, policy, gamma)
+            Q_pi_new, V_pi_new = compute_student_qvalues(env, policy, gamma)
             delta_v_total = float(V_pi_new[start_idx]) - V_before
             delta_v_amu = delta_v_total - delta_v_qpi
 
@@ -258,6 +277,11 @@ def run_experiment(
                     ),
                     'unique_sa': vis_m['unique_sa'],
                     'state_entropy': vis_m['state_entropy'],
+                    'adv_product_s0': _compute_adv_product_s0(
+                        policy, Q_pi_new, V_pi_new, Q_mu, V_mu, start_idx,
+                    ),
+                    'mc_var_undiscounted': eval_results['std_reward'] ** 2,
+                    'mc_var_discounted': eval_results['std_reward_discounted'] ** 2,
                 })
 
     # In exact mode, collect visitation from the final policy via evaluation trajectories
