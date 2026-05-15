@@ -203,6 +203,39 @@ def test_plot_learning_curves_draws_v_star_skyline(tmp_path, monkeypatch):
     plt.close('all')
 
 
+def test_plot_learning_curves_includes_explanation_note(tmp_path, monkeypatch):
+    """Every figure must carry the suptitle note explaining missing cells
+    and per-baseline x-position differences."""
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+
+    captured_figures = []
+    original_savefig = Figure.savefig
+
+    def capturing_savefig(self, *args, **kwargs):
+        captured_figures.append(self)
+        return original_savefig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, 'savefig', capturing_savefig)
+
+    sweep.plot_learning_curves(_zeta_results(), mode='zeta',
+                               figures_dir=str(tmp_path))
+
+    assert captured_figures, "expected at least one figure saved"
+
+    for fig in captured_figures:
+        note_texts = [
+            t.get_text() for t in fig.texts
+            if 'budget < eval_interval' in t.get_text()
+        ]
+        assert note_texts, (
+            "figure missing explanation note containing "
+            "'budget < eval_interval'"
+        )
+
+    plt.close('all')
+
+
 def test_v_star_at_s0_is_finite_and_in_range():
     """Sanity-check the V*(s_0) computation we wire into learning curves.
 
