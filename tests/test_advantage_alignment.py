@@ -110,3 +110,90 @@ def test_calibration_helpers_find_dist6_small_cell():
     # hybrid training mode → results/calibration_hybrid.json
     path_h = _calibration_path_for('hybrid')
     assert path_h.endswith('calibration_hybrid.json')
+
+
+def _adv_history(n_points: int, base: float):
+    """Synthetic history list. Mirrors the schema produced by
+    run_experiment, including the new adv_product_s0 field."""
+    return [
+        {
+            'steps': 5 * (i + 1),
+            'mean_reward': 0.0,
+            'goal_rate': 0.0,
+            'exact_V_start': 0.0,
+            'exact_V_start_undiscounted': 0.0,
+            'unique_sa': 0,
+            'state_entropy': 0.0,
+            'adv_product_s0': base + 0.05 * i,
+        }
+        for i in range(n_points)
+    ]
+
+
+def _zeta_results_for_advantage_alignment():
+    """Synthetic all_results filling the default cell
+    (distance=6, horizon_type='small', alpha=1.0, B=budgets[-2]).
+    4 zetas × 3 seeds = 12 entries."""
+    import json
+    calib = json.load(open('results/calibration.json'))
+    cell = next(v for k, v in calib.items()
+                if k.startswith('dist=6_small_ng=1_'))
+    budget = cell['budgets'][-2]
+    h_val = cell['horizon']
+
+    out = []
+    for zeta in [0.0, 0.33, 0.67, 1.0]:
+        for seed in [0, 1, 2]:
+            out.append({
+                'distance': 6,
+                'alpha': 1.0,
+                'horizon_type': 'small',
+                'horizon': h_val,
+                'sample_budget': budget,
+                'zeta': zeta,
+                'seed': seed,
+                'mode': 'exact',
+                'history': _adv_history(4, base=0.05 * zeta + 0.01 * seed),
+            })
+    return out
+
+
+def test_plot_advantage_alignment_default_path(tmp_path, monkeypatch):
+    """Default invocation must emit exactly one PNG matching the
+    parameterized filename for the default cell."""
+    import json
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+    import run_hypothesis_sweep as sweep
+
+    captured_figures = []
+    original_savefig = Figure.savefig
+
+    def capturing_savefig(self, *args, **kwargs):
+        captured_figures.append(self)
+        return original_savefig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, 'savefig', capturing_savefig)
+
+    sweep.plot_advantage_alignment(
+        _zeta_results_for_advantage_alignment(),
+        mode='zeta',
+        figures_dir=str(tmp_path),
+    )
+
+    assert captured_figures, "expected at least one figure saved"
+
+    calib = json.load(open('results/calibration.json'))
+    cell = next(v for k, v in calib.items()
+                if k.startswith('dist=6_small_ng=1_'))
+    budget = cell['budgets'][-2]
+    expected_name = (
+        f'advantage_alignment_dist6_small_B{budget}_alpha1.00.png'
+    )
+    pngs = list(tmp_path.glob('*.png'))
+    assert len(pngs) == 1, f"expected 1 PNG, got {[p.name for p in pngs]}"
+    assert pngs[0].name == expected_name, \
+        f"unexpected filename {pngs[0].name}, expected {expected_name}"
+    assert pngs[0].stat().st_size > 1000
+
+    plt.close('all')
