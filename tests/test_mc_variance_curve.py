@@ -131,9 +131,10 @@ def _zeta_results_for_mc_variance():
     return out
 
 
-def test_plot_mc_variance_curve_default_emits_two_pngs(tmp_path, monkeypatch):
-    """Default invocation must emit exactly two PNGs (undiscounted +
-    discounted) with the expected parameterized filenames."""
+def test_plot_mc_variance_curve_default_emits_two_panel_png(tmp_path, monkeypatch):
+    """Default invocation must emit exactly one PNG with two panels
+    (undiscounted + discounted), with the expected parameterized filename.
+    Each visible panel carries the α=0 baseline overlay."""
     import json
     import matplotlib.pyplot as plt
     from matplotlib.figure import Figure
@@ -158,27 +159,31 @@ def test_plot_mc_variance_curve_default_emits_two_pngs(tmp_path, monkeypatch):
     cell = next(v for k, v in calib.items()
                 if k.startswith('dist=6_small_ng=1_'))
     budget = cell['budgets'][-2]
-    expected = {
-        f'mc_variance_undiscounted_dist6_small_B{budget}_alpha1.00.png',
-        f'mc_variance_discounted_dist6_small_B{budget}_alpha1.00.png',
-    }
-    pngs = {p.name for p in tmp_path.glob('*.png')}
-    assert pngs == expected, f"expected {expected}, got {pngs}"
-    for p in tmp_path.glob('*.png'):
-        assert p.stat().st_size > 1000
+    expected_name = (
+        f'mc_variance_dist6_small_B{budget}_alpha1.00.png'
+    )
+    pngs = list(tmp_path.glob('*.png'))
+    assert len(pngs) == 1, f"expected 1 PNG, got {[p.name for p in pngs]}"
+    assert pngs[0].name == expected_name, \
+        f"unexpected filename {pngs[0].name}, expected {expected_name}"
+    assert pngs[0].stat().st_size > 1000
 
-    # Every captured figure must have a dashed black α=0 baseline line.
+    # Figure must have at least two visible panels (axes), each with
+    # a dashed black α=0 baseline line.
     for fig in captured_figures:
-        for ax in fig.get_axes():
-            if not ax.get_visible():
-                continue
+        visible_axes = [ax for ax in fig.get_axes() if ax.get_visible()]
+        assert len(visible_axes) >= 2, (
+            f"expected ≥2 visible panels (undiscounted + discounted), "
+            f"got {len(visible_axes)}"
+        )
+        for ax in visible_axes:
             dashed_black = [
                 line for line in ax.get_lines()
                 if line.get_linestyle() == '--' and line.get_color() == 'black'
             ]
             assert dashed_black, (
-                "expected α=0 baseline overlay (dashed black) on "
-                "every captured figure"
+                "expected α=0 baseline overlay (dashed black) on every "
+                f"visible panel; missing on axes titled {ax.get_title()!r}"
             )
 
     plt.close('all')
