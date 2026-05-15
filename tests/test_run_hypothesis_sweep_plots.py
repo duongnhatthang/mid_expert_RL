@@ -168,6 +168,42 @@ def test_plot_learning_curves_cap_zeta_noop(tmp_path):
             "cap_zeta mode must not write learning-curve PNGs"
 
 
+def test_plot_learning_curves_draws_v_star_skyline(tmp_path, monkeypatch):
+    """Every visible subplot must carry a black dashed V*(s_0) horizontal line."""
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+    from matplotlib.lines import Line2D
+
+    captured_figures = []
+    original_savefig = Figure.savefig
+
+    def capturing_savefig(self, *args, **kwargs):
+        captured_figures.append(self)
+        return original_savefig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, 'savefig', capturing_savefig)
+
+    sweep.plot_learning_curves(_zeta_results(), mode='zeta',
+                               figures_dir=str(tmp_path))
+
+    assert captured_figures, "expected at least one figure saved"
+
+    for fig in captured_figures:
+        for ax in fig.get_axes():
+            if not ax.get_visible():
+                continue
+            dashed_black = [
+                line for line in ax.get_lines()
+                if line.get_linestyle() == '--' and line.get_color() == 'black'
+            ]
+            assert dashed_black, (
+                f"axes titled {ax.get_title()!r} missing a black dashed "
+                f"V*(s_0) line"
+            )
+
+    plt.close('all')
+
+
 def test_v_star_at_s0_is_finite_and_in_range():
     """Sanity-check the V*(s_0) computation we wire into learning curves.
 
