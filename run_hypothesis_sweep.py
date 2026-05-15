@@ -1486,6 +1486,10 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
 
     from collections import defaultdict
     import matplotlib.pyplot as plt
+    from tabular_prototype.teacher import (
+        build_optimal_policy, evaluate_policy_values,
+    )
+    from tabular_prototype.config import compute_gamma_from_horizon
 
     tcol = _teacher_col(mode)
     out_dir = os.path.join(figures_dir, 'learning_curves')
@@ -1509,6 +1513,30 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
             horizon_by_h_type[r['horizon_type']] = r['horizon']
         if 'mode' in r:
             training_modes.add(r['mode'])
+
+    # V*(s_0) cache, keyed by (distance, horizon_type). V* depends only on
+    # those two — γ = 1 - 1/H, and the env has deterministic goals + no
+    # traps in the sweep paths. Computed once per unique (dist, h_type)
+    # actually present in the data, not over DISTANCES × HORIZON_TYPES,
+    # so synthetic test data with a subset of distances works without
+    # adjustment.
+    horizons = _get_horizons()
+    goal_pos = _goal_positions(mode)
+    v_star_cache: dict = {}
+    for (dist_k, _alpha_k, h_type_k, _budget_k, _tv_k) in groups:
+        cache_key = (dist_k, h_type_k)
+        if cache_key in v_star_cache:
+            continue
+        h_val = horizons[h_type_k]
+        gamma = compute_gamma_from_horizon(h_val)
+        vstar_env = GridEnv(
+            grid_size=GRID_SIZE, goals=goal_pos[dist_k], horizon=h_val,
+        )
+        pi_star = build_optimal_policy(vstar_env, vstar_env.goals, gamma)
+        _, V_star = evaluate_policy_values(vstar_env, pi_star, gamma)
+        v_star_cache[cache_key] = float(
+            V_star[vstar_env.state_to_idx(vstar_env.start)]
+        )
 
     # X-axis unit depends on training mode: in exact mode the stored 'steps'
     # field is update_count; in hybrid/sample it is total environment steps.
@@ -1598,6 +1626,11 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
                 h_label = (f'H={h_val} ({h_type})' if h_val is not None
                            else f'H={h_type}')
                 ax.set_title(f'{h_label}, B={budget}', fontsize=9)
+                v_star = v_star_cache[(dist, h_type)]
+                ax.axhline(
+                    v_star, linestyle='--', color='black', linewidth=1.2,
+                    label=rf'$V^*(s_0)={v_star:.3f}$',
+                )
                 ax.grid(True, alpha=0.3)
                 if col_idx == 0:
                     ax.set_ylabel(r'$V^\pi(s_0)$', fontsize=9)
