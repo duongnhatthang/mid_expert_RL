@@ -1547,6 +1547,7 @@ def plot_advantage_alignment(
     distance: int = 6,
     horizon_type: str = 'small',
     alpha: float = 1.0,
+    baseline_alpha: float = 0.0,
     budget_rank: int = -2,
 ):
     """Single-cell figure of g^π(t) = E_{a~π}[A^π(s_0,a)·A^μ(s_0,a)].
@@ -1632,6 +1633,9 @@ def plot_advantage_alignment(
                 marker='o', markersize=3, linewidth=1.5)
         ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
 
+    _overlay_baseline_alpha(
+        ax, all_results, mode, tcol, 'adv_product_s0', target, baseline_alpha,
+    )
     ax.axhline(0, color='black', linewidth=0.8, linestyle=':')
     ax.set_xlabel(x_label, fontsize=9)
     ax.set_ylabel(
