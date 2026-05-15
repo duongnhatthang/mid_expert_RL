@@ -67,3 +67,22 @@ def test_adv_product_s0_recorded_in_exact_history():
             f"missing adv_product_s0 in entry {entry}"
         assert entry['adv_product_s0'] is not None
         assert np.isfinite(entry['adv_product_s0'])
+
+
+def test_adv_product_s0_recorded_in_hybrid_history():
+    """run_experiment(mode='hybrid') writes a finite adv_product_s0 in
+    every history entry. Guards against the trajectory-loop
+    history.append site (which is separate from the exact-mode one)."""
+    from tabular_prototype.experiments import run_experiment
+    result = run_experiment(
+        grid_size=9, goals=[(2, 4), (4, 6), (6, 4)],
+        teacher_capacity=1, alpha=1.0, lr=1.0,
+        horizon=8, sample_budget=20, mode='hybrid',
+        trajectories_per_update=1,
+        seed=0, eval_interval=1,
+    )
+    assert result['history'], "history should be non-empty"
+    for entry in result['history']:
+        assert 'adv_product_s0' in entry
+        assert entry['adv_product_s0'] is not None
+        assert np.isfinite(entry['adv_product_s0'])
