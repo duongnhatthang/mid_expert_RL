@@ -281,3 +281,46 @@ def test_plot_advantage_alignment_cap_zeta_noop(tmp_path):
     sweep.plot_advantage_alignment([], mode='cap_zeta',
                                     figures_dir=str(tmp_path))
     assert not list(tmp_path.glob('*.png'))
+
+
+def test_plot_advantage_alignment_baseline_alpha_none(tmp_path, monkeypatch):
+    """Passing baseline_alpha=None must suppress the α=0 baseline overlay.
+
+    Pins the regression-safety contract: callers can disable the
+    overlay if they want only the primary-α curves on the figure."""
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+    import run_hypothesis_sweep as sweep
+
+    captured_figures = []
+    original_savefig = Figure.savefig
+
+    def capturing_savefig(self, *args, **kwargs):
+        captured_figures.append(self)
+        return original_savefig(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, 'savefig', capturing_savefig)
+
+    sweep.plot_advantage_alignment(
+        _zeta_results_for_advantage_alignment(),
+        mode='zeta',
+        figures_dir=str(tmp_path),
+        baseline_alpha=None,
+    )
+
+    assert captured_figures, "expected at least one figure saved"
+    for fig in captured_figures:
+        for ax in fig.get_axes():
+            if not ax.get_visible():
+                continue
+            dashed_black = [
+                line for line in ax.get_lines()
+                if line.get_linestyle() == '--' and line.get_color() == 'black'
+            ]
+            assert not dashed_black, (
+                "expected NO dashed black baseline line when "
+                "baseline_alpha=None, got "
+                f"{len(dashed_black)} such line(s)"
+            )
+
+    plt.close('all')
