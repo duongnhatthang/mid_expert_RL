@@ -31,3 +31,42 @@ def test_evaluate_policy_returns_discounted_fields():
     assert (
         result['mean_reward_discounted'] <= result['mean_reward'] + 1e-9
     ), f"discounted={result['mean_reward_discounted']} > undiscounted={result['mean_reward']}"
+
+
+def test_mc_var_recorded_in_exact_history():
+    """run_experiment(mode='exact') writes finite, non-negative
+    mc_var_undiscounted and mc_var_discounted in every history entry."""
+    from tabular_prototype.experiments import run_experiment
+    result = run_experiment(
+        grid_size=9, goals=[(2, 4), (4, 6), (6, 4)],
+        teacher_capacity=1, alpha=1.0,
+        horizon=8, sample_budget=5, mode='exact',
+        seed=0, eval_interval=1,
+    )
+    assert result['history'], "history should be non-empty"
+    for entry in result['history']:
+        for k in ('mc_var_undiscounted', 'mc_var_discounted'):
+            assert k in entry, f"missing {k!r} in {entry}"
+            assert entry[k] is not None
+            assert np.isfinite(entry[k])
+            assert entry[k] >= 0.0, f"variance must be non-negative, got {entry[k]}"
+
+
+def test_mc_var_recorded_in_hybrid_history():
+    """run_experiment(mode='hybrid') — guards the trajectory-loop
+    history.append site."""
+    from tabular_prototype.experiments import run_experiment
+    result = run_experiment(
+        grid_size=9, goals=[(2, 4), (4, 6), (6, 4)],
+        teacher_capacity=1, alpha=1.0, lr=1.0,
+        horizon=8, sample_budget=20, mode='hybrid',
+        trajectories_per_update=1,
+        seed=0, eval_interval=1,
+    )
+    assert result['history']
+    for entry in result['history']:
+        for k in ('mc_var_undiscounted', 'mc_var_discounted'):
+            assert k in entry
+            assert entry[k] is not None
+            assert np.isfinite(entry[k])
+            assert entry[k] >= 0.0
