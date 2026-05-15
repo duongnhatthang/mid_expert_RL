@@ -166,3 +166,35 @@ def test_plot_learning_curves_cap_zeta_noop(tmp_path):
     if out_dir.exists():
         assert list(out_dir.glob('*.png')) == [], \
             "cap_zeta mode must not write learning-curve PNGs"
+
+
+def test_v_star_at_s0_is_finite_and_in_range():
+    """Sanity-check the V*(s_0) computation we wire into learning curves.
+
+    Build a GridEnv with the same parameters used by the sweep (grid_size=9,
+    1 goal at distance 4, horizon=8 i.e. the 'small' bucket for 9x9), compute
+    pi* and V*, and assert 0 < V*(s_0) <= 1.
+
+    Lower bound: the goal is reachable in 4 steps (Manhattan distance), well
+    within H=8, so the optimal discounted return is strictly positive.
+    Upper bound: maximum undiscounted return is 1 (single absorbing goal
+    with reward=1); discounting shrinks it further. Values above 1 would
+    indicate a sign / state-index bug.
+    """
+    from tabular_prototype.environment import GridEnv, generate_equidistant_goals
+    from tabular_prototype.teacher import build_optimal_policy, evaluate_policy_values
+    from tabular_prototype.config import compute_gamma_from_horizon
+
+    grid_size = 9
+    horizon = 8  # 'small' bucket for 9x9 (corner_dist = 8)
+    goals = generate_equidistant_goals(grid_size, n_goals=1, distance=4)
+    env = GridEnv(grid_size=grid_size, goals=goals, horizon=horizon)
+    gamma = compute_gamma_from_horizon(horizon)
+
+    pi_star = build_optimal_policy(env, env.goals, gamma)
+    _, V_star = evaluate_policy_values(env, pi_star, gamma)
+    v_star_s0 = float(V_star[env.state_to_idx(env.start)])
+
+    assert 0.0 < v_star_s0 <= 1.0, (
+        f"V*(s_0) out of expected (0, 1] range: {v_star_s0}"
+    )
