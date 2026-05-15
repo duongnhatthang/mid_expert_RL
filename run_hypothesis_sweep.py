@@ -1646,9 +1646,18 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
         fig.suptitle(
             f'Learning curve ({mode} sweep) — '
             f'dist={dist}, ' + rf'$\alpha={alpha}$',
-            fontsize=11,
+            fontsize=11, y=0.985,
         )
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.text(
+            0.5, 0.945,
+            "Cells may be missing when no seed completed ≥1 evaluation "
+            "tick (budget < eval_interval). Lines for different baselines "
+            "start at different update steps because trajectory length "
+            "varies stochastically: equal env-step budgets yield different "
+            "update counts per baseline.",
+            ha='center', va='top', fontsize=7.5, color='dimgray', wrap=True,
+        )
+        fig.tight_layout(rect=[0, 0, 1, 0.92])
 
         out_path = os.path.join(
             out_dir, f'learning_curve_dist{dist}_alpha{alpha:.2f}.png'
