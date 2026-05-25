@@ -87,4 +87,29 @@ def test_plot_npg_variance_s0_has_2x2_subplot_layout():
         n_bootstrap=50,
     )
     assert len(fig.axes) == 4
+    suptitle = fig._suptitle.get_text() if fig._suptitle else ''
+    assert 'dist=6' in suptitle
+    assert 'B=200' in suptitle
+    assert r'$\alpha=1.0$' in suptitle or 'alpha=1.0' in suptitle.lower()
+    bootstrap_anno = '\n'.join(t.get_text() for t in fig.texts)
+    assert 'B=50' in bootstrap_anno
+    assert 'bootstrap' in bootstrap_anno.lower()
+    plt.close(fig)
+
+
+def test_plot_npg_cosine_figure_has_cell_info_annotation():
+    from tabular_prototype.visualization import _build_npg_cosine_figure
+    histories_by_teacher = {0: [_fake_history(cos_value=0.7)]}
+    fig = _build_npg_cosine_figure(
+        histories_by_teacher=histories_by_teacher,
+        mode='capability',
+        cell_info={'distance': 6, 'horizon': 50,
+                   'horizon_type': 'small',
+                   'sample_budget': 200, 'alpha': 1.0},
+    )
+    suptitle = fig._suptitle.get_text() if fig._suptitle else ''
+    assert 'dist=6' in suptitle
+    assert 'B=200' in suptitle
+    formula = '\n'.join(t.get_text() for t in fig.texts)
+    assert 'F' in formula and ('g' in formula or 'hat g' in formula)
     plt.close(fig)

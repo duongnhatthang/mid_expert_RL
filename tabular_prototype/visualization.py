@@ -1402,27 +1402,16 @@ def plot_entropy_trajectory(
     plt.close(fig)
 
 
-def plot_npg_cosine(
+def _build_npg_cosine_figure(
     histories_by_teacher: Dict[Any, List[List[Dict[str, Any]]]],
     mode: str,
-    out_path: str,
     cell_info: Dict[str, Any],
-) -> None:
-    """Single-panel figure of cos(U_α, U_{α=0}) per env step.
+):
+    """Build (but don't save) the cos(U_α, U_{α=0}) figure.
 
-    Args:
-        histories_by_teacher: dict mapping teacher value -> list of
-            per-seed history lists. Each history list is a list of
-            per-eval-tick dicts containing 'steps' and 'cos_npg_dir'.
-        mode: 'capability' or 'zeta' — controls label/sort ordering.
-        out_path: full PNG output path.
-        cell_info: must contain keys distance, horizon, horizon_type,
-            sample_budget, alpha.
+    Returns the matplotlib Figure so tests can inspect titles / texts.
     """
-    import os
     import matplotlib.pyplot as plt
-
-    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(7.5, 4.2))
 
@@ -1481,6 +1470,32 @@ def plot_npg_cosine(
         ha='center', fontsize=8,
     )
     fig.tight_layout(rect=[0, 0.04, 1, 0.95])
+    return fig
+
+
+def plot_npg_cosine(
+    histories_by_teacher: Dict[Any, List[List[Dict[str, Any]]]],
+    mode: str,
+    out_path: str,
+    cell_info: Dict[str, Any],
+) -> None:
+    """Single-panel figure of cos(U_α, U_{α=0}) per env step.
+
+    Args:
+        histories_by_teacher: dict mapping teacher value -> list of
+            per-seed history lists. Each history list is a list of
+            per-eval-tick dicts containing 'steps' and 'cos_npg_dir'.
+        mode: 'capability' or 'zeta' — controls label/sort ordering.
+        out_path: full PNG output path.
+        cell_info: must contain keys distance, horizon, horizon_type,
+            sample_budget, alpha.
+    """
+    import os
+    import matplotlib.pyplot as plt
+
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+
+    fig = _build_npg_cosine_figure(histories_by_teacher, mode, cell_info)
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
 
