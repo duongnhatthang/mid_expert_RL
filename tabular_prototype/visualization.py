@@ -1483,3 +1483,189 @@ def plot_npg_cosine(
     fig.tight_layout(rect=[0, 0.04, 1, 0.95])
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
+
+
+def _build_npg_var_trace_figure(
+    histories_by_teacher, baseline_history_alpha_zero,
+    mode, cell_info, n_bootstrap,
+):
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+
+    sorted_teachers = sorted(
+        histories_by_teacher.keys(), key=lambda k: (k is None, k),
+    )
+    for tv in sorted_teachers:
+        histories = histories_by_teacher[tv]
+        if not histories:
+            continue
+        min_len = min(len(h) for h in histories)
+        if min_len == 0:
+            continue
+        steps = np.mean([
+            [h['steps'] for h in seed_hist[:min_len]]
+            for seed_hist in histories
+        ], axis=0)
+        values = np.stack([
+            [h['var_U_trace'] for h in seed_hist[:min_len]]
+            for seed_hist in histories
+        ], axis=0)
+        mean = np.nanmean(values, axis=0)
+        std = np.nanstd(values, axis=0)
+        label = (f'cap={tv}' if mode == 'capability'
+                 else f'ζ={tv}')
+        ax.plot(steps, mean, label=label, marker='o',
+                markersize=3, linewidth=1.5)
+        ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+
+    if baseline_history_alpha_zero:
+        bh = baseline_history_alpha_zero
+        min_len = min(len(h) for h in bh)
+        if min_len > 0:
+            steps_b = np.mean([
+                [h['steps'] for h in seed_hist[:min_len]]
+                for seed_hist in bh
+            ], axis=0)
+            vals_b = np.stack([
+                [h['var_U_trace'] for h in seed_hist[:min_len]]
+                for seed_hist in bh
+            ], axis=0)
+            mean_b = np.nanmean(vals_b, axis=0)
+            std_b = np.nanstd(vals_b, axis=0)
+            ax.plot(steps_b, mean_b, color='black', linestyle='--',
+                    linewidth=1.5, label='α=0 (vanilla NPG)')
+            ax.fill_between(steps_b, mean_b - std_b, mean_b + std_b,
+                            color='black', alpha=0.1)
+
+    ax.set_xlabel('env step', fontsize=9)
+    ax.set_ylabel(r'$\sum_{s,a}\mathrm{Var}_b(U_b)$', fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, loc='best')
+
+    h_val = cell_info['horizon']
+    h_type = cell_info['horizon_type']
+    fig.suptitle(
+        f'NPG update-direction trace variance ({mode} sweep) — '
+        f"dist={cell_info['distance']}, H={h_val} ({h_type}), "
+        f"B={cell_info['sample_budget']}, "
+        rf"$\alpha={cell_info['alpha']}$",
+        fontsize=11,
+    )
+    fig.text(
+        0.5, 0.01,
+        f'Var across B={n_bootstrap} trajectory-level bootstrap resamples '
+        f'of the per-step trajectory batch (no extra rollouts)',
+        ha='center', fontsize=8,
+    )
+    fig.tight_layout(rect=[0, 0.04, 1, 0.95])
+    return fig
+
+
+def _build_npg_var_s0_figure(
+    histories_by_teacher, baseline_history_alpha_zero,
+    mode, cell_info, n_bootstrap,
+):
+    import matplotlib.pyplot as plt
+    fig, axes = plt.subplots(2, 2, figsize=(9, 6), sharex=True)
+    action_labels = ['↑ (a=0)', '→ (a=1)', '↓ (a=2)', '← (a=3)']
+
+    sorted_teachers = sorted(
+        histories_by_teacher.keys(), key=lambda k: (k is None, k),
+    )
+
+    for a, ax in enumerate(axes.flatten()):
+        field = f'var_U_s0_a{a}'
+        for tv in sorted_teachers:
+            histories = histories_by_teacher[tv]
+            if not histories:
+                continue
+            min_len = min(len(h) for h in histories)
+            if min_len == 0:
+                continue
+            steps = np.mean([
+                [h['steps'] for h in seed_hist[:min_len]]
+                for seed_hist in histories
+            ], axis=0)
+            values = np.stack([
+                [h[field] for h in seed_hist[:min_len]]
+                for seed_hist in histories
+            ], axis=0)
+            mean = np.nanmean(values, axis=0)
+            std = np.nanstd(values, axis=0)
+            label = (f'cap={tv}' if mode == 'capability'
+                     else f'ζ={tv}')
+            ax.plot(steps, mean, label=label, marker='o',
+                    markersize=2.5, linewidth=1.3)
+            ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+
+        if baseline_history_alpha_zero:
+            bh = baseline_history_alpha_zero
+            min_len = min(len(h) for h in bh)
+            if min_len > 0:
+                steps_b = np.mean([
+                    [h['steps'] for h in seed_hist[:min_len]]
+                    for seed_hist in bh
+                ], axis=0)
+                vals_b = np.stack([
+                    [h[field] for h in seed_hist[:min_len]]
+                    for seed_hist in bh
+                ], axis=0)
+                mean_b = np.nanmean(vals_b, axis=0)
+                ax.plot(steps_b, mean_b, color='black',
+                        linestyle='--', linewidth=1.3,
+                        label='α=0 (vanilla NPG)')
+
+        ax.set_title(action_labels[a], fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylabel(rf'$\mathrm{{Var}}_b(U_b[s_0,\,{a}])$', fontsize=8)
+
+    for ax in axes[-1, :]:
+        ax.set_xlabel('env step', fontsize=9)
+    axes[0, 0].legend(fontsize=7, loc='best')
+
+    h_val = cell_info['horizon']
+    h_type = cell_info['horizon_type']
+    fig.suptitle(
+        f'NPG update-direction variance at start state s₀ '
+        f'({mode} sweep) — '
+        f"dist={cell_info['distance']}, H={h_val} ({h_type}), "
+        f"B={cell_info['sample_budget']}, "
+        rf"$\alpha={cell_info['alpha']}$",
+        fontsize=11,
+    )
+    fig.text(
+        0.5, 0.01,
+        f'Var across B={n_bootstrap} trajectory-level bootstrap resamples '
+        f'of the per-step trajectory batch (no extra rollouts)',
+        ha='center', fontsize=8,
+    )
+    fig.tight_layout(rect=[0, 0.04, 1, 0.95])
+    return fig
+
+
+def plot_npg_variance(
+    histories_by_teacher: Dict[Any, List[List[Dict[str, Any]]]],
+    baseline_history_alpha_zero: List[List[Dict[str, Any]]],
+    mode: str,
+    out_dir: str,
+    cell_info: Dict[str, Any],
+    n_bootstrap: int = 50,
+) -> None:
+    """Two PNGs: total Var[U] trace + per-action Var[U] at s₀ (2x2)."""
+    import os
+    import matplotlib.pyplot as plt
+    os.makedirs(out_dir, exist_ok=True)
+
+    fig_trace = _build_npg_var_trace_figure(
+        histories_by_teacher, baseline_history_alpha_zero,
+        mode, cell_info, n_bootstrap,
+    )
+    fig_trace.savefig(os.path.join(out_dir, 'npg_var_trace.png'), dpi=120)
+    plt.close(fig_trace)
+
+    fig_s0 = _build_npg_var_s0_figure(
+        histories_by_teacher, baseline_history_alpha_zero,
+        mode, cell_info, n_bootstrap,
+    )
+    fig_s0.savefig(os.path.join(out_dir, 'npg_var_s0.png'), dpi=120)
+    plt.close(fig_s0)
