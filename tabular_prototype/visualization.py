@@ -1,5 +1,6 @@
 """Visualization functions for policies, Q-values, advantages, and experiment results."""
 
+import warnings
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
@@ -1434,8 +1435,10 @@ def _build_npg_cosine_figure(
             [h['cos_npg_dir'] for h in seed_hist[:min_len]]
             for seed_hist in histories
         ], axis=0)
-        mean = np.nanmean(values, axis=0)
-        std = np.nanstd(values, axis=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            mean = np.nanmean(values, axis=0)
+            std = np.nanstd(values, axis=0)
         label = (f'cap={tv}' if mode == 'capability'
                  else f'ζ={tv}')
         ax.plot(steps, mean, label=label, marker='o',
@@ -1525,8 +1528,10 @@ def _build_npg_var_trace_figure(
             [h['var_U_trace'] for h in seed_hist[:min_len]]
             for seed_hist in histories
         ], axis=0)
-        mean = np.nanmean(values, axis=0)
-        std = np.nanstd(values, axis=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            mean = np.nanmean(values, axis=0)
+            std = np.nanstd(values, axis=0)
         label = (f'cap={tv}' if mode == 'capability'
                  else f'ζ={tv}')
         ax.plot(steps, mean, label=label, marker='o',
@@ -1545,8 +1550,10 @@ def _build_npg_var_trace_figure(
                 [h['var_U_trace'] for h in seed_hist[:min_len]]
                 for seed_hist in bh
             ], axis=0)
-            mean_b = np.nanmean(vals_b, axis=0)
-            std_b = np.nanstd(vals_b, axis=0)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                mean_b = np.nanmean(vals_b, axis=0)
+                std_b = np.nanstd(vals_b, axis=0)
             ax.plot(steps_b, mean_b, color='black', linestyle='--',
                     linewidth=1.5, label='α=0 (vanilla NPG)')
             ax.fill_between(steps_b, mean_b - std_b, mean_b + std_b,
@@ -1605,8 +1612,10 @@ def _build_npg_var_s0_figure(
                 [h[field] for h in seed_hist[:min_len]]
                 for seed_hist in histories
             ], axis=0)
-            mean = np.nanmean(values, axis=0)
-            std = np.nanstd(values, axis=0)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                mean = np.nanmean(values, axis=0)
+                std = np.nanstd(values, axis=0)
             label = (f'cap={tv}' if mode == 'capability'
                      else f'ζ={tv}')
             ax.plot(steps, mean, label=label, marker='o',
@@ -1625,7 +1634,9 @@ def _build_npg_var_s0_figure(
                     [h[field] for h in seed_hist[:min_len]]
                     for seed_hist in bh
                 ], axis=0)
-                mean_b = np.nanmean(vals_b, axis=0)
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', RuntimeWarning)
+                    mean_b = np.nanmean(vals_b, axis=0)
                 ax.plot(steps_b, mean_b, color='black',
                         linestyle='--', linewidth=1.3,
                         label='α=0 (vanilla NPG)')
