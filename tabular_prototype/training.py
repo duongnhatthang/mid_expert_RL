@@ -378,6 +378,66 @@ def update_direction_diagnostics(
     return result
 
 
+def _update_direction_full_batch(
+    policy: TabularSoftmaxPolicy,
+    trajectories: List[List[Transition]],
+    Q_mu: Optional[np.ndarray],
+    V_mu: Optional[np.ndarray],
+    alpha: float,
+    gamma: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (U_α, U_{α=0}) on the full batch.
+
+    Exposed for testing the softmax-tangent property; production code
+    should call `update_direction_diagnostics`.
+    """
+    # Build per_traj cache identically to update_direction_diagnostics
+    n_states, n_actions = policy.theta.shape
+    has_teacher = Q_mu is not None and V_mu is not None
+    s_all_list, a_all_list, G_all_list, Amu_all_list = [], [], [], []
+    for traj in trajectories:
+        if not traj:
+            continue
+        G = np.array(estimate_returns(traj, gamma), dtype=float)
+        s_arr = np.array([t.state_idx for t in traj], dtype=int)
+        a_arr = np.array([t.action for t in traj], dtype=int)
+        if has_teacher:
+            A_mu = np.array(
+                [get_teacher_advantage(Q_mu, V_mu, int(s), int(a))
+                 for s, a in zip(s_arr, a_arr)], dtype=float,
+            )
+        else:
+            A_mu = np.zeros_like(G)
+        s_all_list.append(s_arr); a_all_list.append(a_arr)
+        G_all_list.append(G); Amu_all_list.append(A_mu)
+    if not s_all_list:
+        return (np.zeros((n_states, n_actions)),
+                np.zeros((n_states, n_actions)))
+    s_all = np.concatenate(s_all_list)
+    a_all = np.concatenate(a_all_list)
+    G_all = np.concatenate(G_all_list)
+    Amu_all = np.concatenate(Amu_all_list)
+    A_eff = (1.0 - alpha) * G_all + alpha * Amu_all
+    A_van = G_all
+
+    U_alpha = np.zeros((n_states, n_actions))
+    U_van = np.zeros((n_states, n_actions))
+    for s in np.unique(s_all):
+        mask = s_all == s
+        actions_s = a_all[mask]
+        pi_s = policy.get_probs(int(s))
+        psi_mat = np.zeros((len(actions_s), n_actions))
+        psi_mat[np.arange(len(actions_s)), actions_s] = 1.0
+        psi_mat -= pi_s[None, :]
+        F_s = psi_mat.T @ psi_mat
+        g_alpha_s = psi_mat.T @ A_eff[mask]
+        g_van_s = psi_mat.T @ A_van[mask]
+        F_pinv = np.linalg.pinv(F_s)
+        U_alpha[int(s)] = F_pinv @ g_alpha_s
+        U_van[int(s)] = F_pinv @ g_van_s
+    return U_alpha, U_van
+
+
 def evaluate_policy(
     env: GridEnv, policy: TabularSoftmaxPolicy,
     n_episodes: int, rng: np.random.Generator

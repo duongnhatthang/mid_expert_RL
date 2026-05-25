@@ -94,3 +94,20 @@ def test_variance_fields_nonnegative_and_trace_dominates_s0_sum():
         assert result[f'var_U_s0_a{a}'] >= 0.0
     assert result['var_U_trace'] >= 0.0
     assert result['var_U_trace'] + 1e-9 >= s0_sum
+
+
+def test_softmax_tangent_per_state_action_sum_is_zero():
+    """For tabular softmax, ψ row-sums to 0 (action axis), so the
+    null space of F̂_s contains the all-ones vector. The pseudo-inverse
+    maps to the orthogonal complement of N(F̂_s), so U[s,:].sum() ≈ 0
+    for every visited state."""
+    from tabular_prototype.training import _update_direction_full_batch
+    policy, trajs, Q_mu, V_mu, gamma, _, _ = _make_setup(seed=4)
+    U_alpha, U_van = _update_direction_full_batch(
+        policy, trajs, Q_mu, V_mu, alpha=1.0, gamma=gamma,
+    )
+    # Visited states are those with any non-zero row.
+    visited = np.any(U_alpha != 0.0, axis=1) | np.any(U_van != 0.0, axis=1)
+    for s in np.flatnonzero(visited):
+        assert abs(U_alpha[s].sum()) < 1e-8, f"U_alpha sum at s={s}"
+        assert abs(U_van[s].sum()) < 1e-8, f"U_van sum at s={s}"
