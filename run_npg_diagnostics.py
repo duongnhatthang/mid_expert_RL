@@ -38,6 +38,8 @@ from tabular_prototype.visualization import (
 import run_hypothesis_sweep as sweep
 
 
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+
 ZETA_TEACHER_VALUES_ALPHA1 = [0.0, 0.33, 0.67, 1.0]
 CAPABILITY_TEACHER_VALUES_ALPHA1 = [0, 1, 2, 3]
 
@@ -55,7 +57,9 @@ def _resolve_cell(args):
             'capability': dict(budget=args.override_budget, h_val=h_val,
                                lr=0.5, tpu=4, n_goals=n_goals_cap),
         }
-    calib_path = sweep._calibration_path_for(args.training_mode)
+    calib_path = os.path.join(
+        _REPO_ROOT, sweep._calibration_path_for(args.training_mode),
+    )
     try:
         calib = json.load(open(calib_path))
     except FileNotFoundError:
