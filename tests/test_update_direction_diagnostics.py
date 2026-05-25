@@ -79,3 +79,18 @@ def test_cosine_is_nan_when_update_direction_is_zero():
         start_idx=start_idx, rng=rng, n_bootstrap=5,
     )
     assert np.isnan(result['cos_npg_dir'])
+
+
+def test_variance_fields_nonnegative_and_trace_dominates_s0_sum():
+    """All bootstrap variance fields are ≥ 0, and var_U_trace
+    (sum over ALL states) ≥ sum of var_U_s0_a* (only state s₀)."""
+    policy, trajs, Q_mu, V_mu, gamma, start_idx, rng = _make_setup(seed=3)
+    result = update_direction_diagnostics(
+        policy, trajs, Q_mu, V_mu, alpha=1.0, gamma=gamma,
+        start_idx=start_idx, rng=rng, n_bootstrap=30,
+    )
+    s0_sum = sum(result[f'var_U_s0_a{a}'] for a in range(4))
+    for a in range(4):
+        assert result[f'var_U_s0_a{a}'] >= 0.0
+    assert result['var_U_trace'] >= 0.0
+    assert result['var_U_trace'] + 1e-9 >= s0_sum
