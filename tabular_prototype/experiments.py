@@ -18,6 +18,7 @@ from .training import (
     compute_state_action_visitation,
     visitation_metrics,
     _safe_kurtosis,
+    update_direction_diagnostics,
 )
 from .visualization import visualize_state_visitation, visualize_visitation_comparison_grid
 
@@ -53,6 +54,7 @@ def run_experiment(
     eval_interval: int = 10,
     eval_n_episodes: int = 20,
     mode: str = "exact",
+    n_bootstrap: int = 50,
 ) -> Dict:
     """Run a single experiment and return results dict.
 
@@ -206,6 +208,19 @@ def run_experiment(
                 Q_pi=q_pi_for_grad,
             )
 
+            predicted_update_count = update_count + 1
+            will_eval_tick = (
+                predicted_update_count % eval_interval == 0
+                or total_steps >= sample_budget
+            )
+            if mode == "sample" and will_eval_tick:
+                npg_diag = update_direction_diagnostics(
+                    policy, trajectories, Q_mu, V_mu, alpha, gamma,
+                    start_idx=start_idx, rng=rng, n_bootstrap=n_bootstrap,
+                )
+            else:
+                npg_diag = None
+
             # Save theta for delta-V decomposition
             theta_saved = policy.theta.copy()
 
@@ -267,7 +282,7 @@ def run_experiment(
                 _, V_pi_undiscounted = compute_student_qvalues(
                     env, policy, gamma_undiscounted
                 )
-                history.append({
+                hist_entry = {
                     'steps': total_steps,
                     'mean_reward': eval_results['mean_reward'],
                     'goal_rate': eval_results['goal_rate'],
@@ -282,7 +297,10 @@ def run_experiment(
                     ),
                     'mc_var_undiscounted': eval_results['std_reward'] ** 2,
                     'mc_var_discounted': eval_results['std_reward_discounted'] ** 2,
-                })
+                }
+                if npg_diag is not None:
+                    hist_entry.update(npg_diag)
+                history.append(hist_entry)
 
     # In exact mode, collect visitation from the final policy via evaluation trajectories
     if mode == "exact" and cumulative_visitation.sum() == 0:
