@@ -111,3 +111,50 @@ def test_softmax_tangent_per_state_action_sum_is_zero():
     for s in np.flatnonzero(visited):
         assert abs(U_alpha[s].sum()) < 1e-8, f"U_alpha sum at s={s}"
         assert abs(U_van[s].sum()) < 1e-8, f"U_van sum at s={s}"
+
+
+def test_reproducible_under_same_seed():
+    """Same RNG seed → identical scalar outputs."""
+    policy, trajs, Q_mu, V_mu, gamma, start_idx, _ = _make_setup(seed=5)
+    rng_a = np.random.default_rng(42)
+    rng_b = np.random.default_rng(42)
+    r1 = update_direction_diagnostics(
+        policy, trajs, Q_mu, V_mu, alpha=1.0, gamma=gamma,
+        start_idx=start_idx, rng=rng_a, n_bootstrap=10,
+    )
+    r2 = update_direction_diagnostics(
+        policy, trajs, Q_mu, V_mu, alpha=1.0, gamma=gamma,
+        start_idx=start_idx, rng=rng_b, n_bootstrap=10,
+    )
+    for k in r1:
+        if np.isnan(r1[k]) and np.isnan(r2[k]):
+            continue
+        assert r1[k] == r2[k], f"mismatch at {k}: {r1[k]} vs {r2[k]}"
+
+
+def test_empty_or_single_state_corner_does_not_raise():
+    """If trajectories degenerate (single state, single action visited),
+    the helper still returns finite floats (NaN allowed for cosine only)."""
+    rng = np.random.default_rng(6)
+    # A 3x3 env where the start position is also the goal — every trajectory
+    # immediately terminates at length 0 or 1.
+    env = GridEnv(
+        grid_size=3, goals=[(1, 1)], traps=[], horizon=5,
+    )
+    policy = TabularSoftmaxPolicy(env.n_states, env.n_actions)
+    gamma = compute_gamma_from_horizon(5)
+    Q_mu, V_mu, _ = compute_teacher_values_auto(
+        env, known_goals=[(1, 1)], zeta=1.0, gamma=gamma,
+    )
+    trajs = collect_trajectories(env, policy, 3, rng)
+    start_idx = env.state_to_idx(env.start)
+    result = update_direction_diagnostics(
+        policy, trajs, Q_mu, V_mu, alpha=1.0, gamma=gamma,
+        start_idx=start_idx, rng=rng, n_bootstrap=5,
+    )
+    # Doesn't raise; non-cosine scalars are finite & ≥ 0
+    for k, v in result.items():
+        if k == 'cos_npg_dir':
+            assert np.isnan(v) or np.isfinite(v)
+        else:
+            assert np.isfinite(v) and v >= 0.0
