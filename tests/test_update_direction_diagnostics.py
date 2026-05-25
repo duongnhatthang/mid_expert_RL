@@ -44,3 +44,38 @@ def test_returns_expected_scalar_keys():
             assert np.isnan(v) or (-1.0 - 1e-9 <= v <= 1.0 + 1e-9)
         else:
             assert np.isfinite(v) and v >= 0.0
+
+
+def test_cosine_is_one_when_alpha_is_zero():
+    """At α=0, A_eff[i] = G[i] = A_van[i] for every transition,
+    so U_α = U_{α=0} exactly and cos_npg_dir == 1.0."""
+    policy, trajs, Q_mu, V_mu, gamma, start_idx, rng = _make_setup(seed=1)
+    result = update_direction_diagnostics(
+        policy, trajs, Q_mu, V_mu, alpha=0.0, gamma=gamma,
+        start_idx=start_idx, rng=rng, n_bootstrap=5,
+    )
+    assert result['cos_npg_dir'] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_cosine_is_one_when_teacher_is_none():
+    """With no teacher and 0 < α < 1, A_eff = (1-α)·G is a positive
+    scalar multiple of A_van = G, so U_α and U_van point the same way
+    and cos = +1. (α=1 with no teacher zeroes A_eff → cos is NaN, see
+    separate test.)"""
+    policy, trajs, _, _, gamma, start_idx, rng = _make_setup(seed=2)
+    result = update_direction_diagnostics(
+        policy, trajs, Q_mu=None, V_mu=None, alpha=0.5, gamma=gamma,
+        start_idx=start_idx, rng=rng, n_bootstrap=5,
+    )
+    assert result['cos_npg_dir'] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_cosine_is_nan_when_update_direction_is_zero():
+    """α=1 with no teacher zeros out A_eff, so U_α = 0 and cosine is
+    undefined — the helper must report NaN rather than crash."""
+    policy, trajs, _, _, gamma, start_idx, rng = _make_setup(seed=2)
+    result = update_direction_diagnostics(
+        policy, trajs, Q_mu=None, V_mu=None, alpha=1.0, gamma=gamma,
+        start_idx=start_idx, rng=rng, n_bootstrap=5,
+    )
+    assert np.isnan(result['cos_npg_dir'])
