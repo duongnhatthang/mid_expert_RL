@@ -47,6 +47,28 @@ def test_exact_mode_does_not_emit_npg_diag_fields():
     assert 'cos_npg_dir' not in h0
 
 
+def test_sample_mode_skips_npg_diag_when_n_bootstrap_is_zero():
+    """When n_bootstrap=0 (the default), sample mode preserves the legacy
+    history schema — no NPG-direction keys appear."""
+    goals = generate_equidistant_goals(grid_size=5, n_goals=1, distance=2)
+    result = run_experiment(
+        grid_size=5,
+        goals=goals,
+        teacher_capacity=1,
+        sample_budget=120,
+        horizon=10,
+        alpha=1.0,
+        lr=0.5,
+        seed=0,
+        mode='sample',
+        trajectories_per_update=4,
+        eval_interval=2,
+        # n_bootstrap omitted → default 0
+    )
+    h0 = result['history'][0]
+    assert 'cos_npg_dir' not in h0
+
+
 def test_run_learning_curve_propagates_n_bootstrap():
     from tabular_prototype.experiments import run_learning_curve_experiment
     from tabular_prototype.environment import generate_equidistant_goals

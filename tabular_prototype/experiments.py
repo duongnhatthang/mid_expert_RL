@@ -54,7 +54,7 @@ def run_experiment(
     eval_interval: int = 10,
     eval_n_episodes: int = 20,
     mode: str = "exact",
-    n_bootstrap: int = 50,
+    n_bootstrap: int = 0,
 ) -> Dict:
     """Run a single experiment and return results dict.
 
@@ -213,7 +213,7 @@ def run_experiment(
                 predicted_update_count % eval_interval == 0
                 or total_steps >= sample_budget
             )
-            if mode == "sample" and will_eval_tick:
+            if mode == "sample" and will_eval_tick and n_bootstrap > 0:
                 npg_diag = update_direction_diagnostics(
                     policy, trajectories, Q_mu, V_mu, alpha, gamma,
                     start_idx=start_idx, rng=rng, n_bootstrap=n_bootstrap,
@@ -665,7 +665,7 @@ def run_learning_curve_experiment(
     saturation_window: int = 10,
     saturation_eps: float = 0.005,
     saturation_checks: int = 3,
-    n_bootstrap: int = 50,
+    n_bootstrap: int = 0,
 ) -> Dict[int, list]:
     """
     Run learning curve experiments with optional saturation-based stopping.
@@ -979,7 +979,7 @@ def run_learning_curve_experiment_zeta(
     saturation_window: int = 10,
     saturation_eps: float = 0.005,
     saturation_checks: int = 3,
-    n_bootstrap: int = 50,
+    n_bootstrap: int = 0,
 ) -> Dict[float, list]:
     """
     Learning curve experiment using the continuous zeta parameterisation.
