@@ -253,6 +253,131 @@ def exact_npg_update(
     return diag
 
 
+# =========================================================================
+# NPG update-direction diagnostic
+# =========================================================================
+
+def update_direction_diagnostics(
+    policy: TabularSoftmaxPolicy,
+    trajectories: List[List[Transition]],
+    Q_mu: Optional[np.ndarray],
+    V_mu: Optional[np.ndarray],
+    alpha: float,
+    gamma: float,
+    start_idx: int,
+    rng: np.random.Generator,
+    n_bootstrap: int = 50,
+) -> dict:
+    """Compute U = F̂⁺ ĝ_α and its trajectory-bootstrap variance.
+
+    Returns six per-step scalars:
+        cos_npg_dir       cos(U_α, U_{α=0})  at the same θ_t (same batch).
+                          NaN if either norm is zero.
+        var_U_trace       Σ_{s,a} Var_b(U_b[s,a])  across n_bootstrap trajectory-
+                          level bootstrap resamples of the current batch.
+        var_U_s0_a{0..3}  Var_b(U_b[s₀, a])  for each action a.
+    """
+    n_states, n_actions = policy.theta.shape
+
+    # Per-trajectory cached arrays: (s_idx, a_idx, G_t, A_mu).
+    per_traj: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+    has_teacher = Q_mu is not None and V_mu is not None
+    for traj in trajectories:
+        if len(traj) == 0:
+            per_traj.append((
+                np.empty(0, dtype=int), np.empty(0, dtype=int),
+                np.empty(0), np.empty(0),
+            ))
+            continue
+        G = np.array(estimate_returns(traj, gamma), dtype=float)
+        s_arr = np.array([t.state_idx for t in traj], dtype=int)
+        a_arr = np.array([t.action for t in traj], dtype=int)
+        if has_teacher:
+            A_mu = np.array(
+                [get_teacher_advantage(Q_mu, V_mu, int(s), int(a))
+                 for s, a in zip(s_arr, a_arr)], dtype=float,
+            )
+        else:
+            A_mu = np.zeros_like(G)
+        per_traj.append((s_arr, a_arr, G, A_mu))
+
+    def _compute_U(traj_indices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute (U_α, U_{α=0}) for a (possibly resampled) set of trajectories."""
+        if len(traj_indices) == 0:
+            return (np.zeros((n_states, n_actions)),
+                    np.zeros((n_states, n_actions)))
+        s_all = np.concatenate([per_traj[i][0] for i in traj_indices])
+        a_all = np.concatenate([per_traj[i][1] for i in traj_indices])
+        G_all = np.concatenate([per_traj[i][2] for i in traj_indices])
+        Amu_all = np.concatenate([per_traj[i][3] for i in traj_indices])
+        if len(s_all) == 0:
+            return (np.zeros((n_states, n_actions)),
+                    np.zeros((n_states, n_actions)))
+
+        A_eff = (1.0 - alpha) * G_all + alpha * Amu_all
+        A_van = G_all  # α=0 baseline (vanilla NPG)
+
+        U_alpha = np.zeros((n_states, n_actions))
+        U_van = np.zeros((n_states, n_actions))
+
+        # The 1/n in F̂ and ĝ cancels under pinv, so we drop it here.
+        # Group by state via np.unique for efficiency.
+        for s in np.unique(s_all):
+            mask = s_all == s
+            actions_s = a_all[mask]
+            pi_s = policy.get_probs(int(s))  # shape (A,)
+
+            # ψᵢ = e_{a_i} - π(.|s)  for each transition i visiting state s.
+            # F̂_s = Σ_i ψᵢ ψᵢᵀ; ĝ_s = Σ_i A_i ψᵢ.
+            psi_mat = np.zeros((len(actions_s), n_actions))
+            psi_mat[np.arange(len(actions_s)), actions_s] = 1.0
+            psi_mat -= pi_s[None, :]
+
+            F_s = psi_mat.T @ psi_mat
+            g_alpha_s = psi_mat.T @ A_eff[mask]
+            g_van_s = psi_mat.T @ A_van[mask]
+
+            F_s_pinv = np.linalg.pinv(F_s)
+            U_alpha[int(s)] = F_s_pinv @ g_alpha_s
+            U_van[int(s)] = F_s_pinv @ g_van_s
+
+        return U_alpha, U_van
+
+    # Point estimate on the full batch (for cosine).
+    n_traj = len(trajectories)
+    full_indices = np.arange(n_traj)
+    U_alpha_full, U_van_full = _compute_U(full_indices)
+
+    a_flat = U_alpha_full.reshape(-1)
+    v_flat = U_van_full.reshape(-1)
+    a_norm = float(np.linalg.norm(a_flat))
+    v_norm = float(np.linalg.norm(v_flat))
+    if a_norm > 0.0 and v_norm > 0.0:
+        cos_npg_dir = float(a_flat @ v_flat / (a_norm * v_norm))
+    else:
+        cos_npg_dir = float('nan')
+
+    # Bootstrap U_α only (we don't need variance of the α=0 direction).
+    if n_traj > 0 and n_bootstrap > 0:
+        U_boots = np.zeros((n_bootstrap, n_states, n_actions))
+        for b in range(n_bootstrap):
+            idx = rng.integers(0, n_traj, size=n_traj)
+            U_b, _ = _compute_U(idx)
+            U_boots[b] = U_b
+        U_var = U_boots.var(axis=0)
+    else:
+        U_var = np.zeros((n_states, n_actions))
+
+    result = {
+        'cos_npg_dir': cos_npg_dir,
+        'var_U_trace': float(U_var.sum()),
+    }
+    s0_var = U_var[int(start_idx)]
+    for a in range(4):
+        result[f'var_U_s0_a{a}'] = float(s0_var[a]) if a < n_actions else 0.0
+    return result
+
+
 def evaluate_policy(
     env: GridEnv, policy: TabularSoftmaxPolicy,
     n_episodes: int, rng: np.random.Generator
