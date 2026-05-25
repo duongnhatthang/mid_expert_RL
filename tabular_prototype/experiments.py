@@ -665,6 +665,7 @@ def run_learning_curve_experiment(
     saturation_window: int = 10,
     saturation_eps: float = 0.005,
     saturation_checks: int = 3,
+    n_bootstrap: int = 50,
 ) -> Dict[int, list]:
     """
     Run learning curve experiments with optional saturation-based stopping.
@@ -686,7 +687,7 @@ def run_learning_curve_experiment(
             horizon=horizon, sample_budget=max_budget, alpha=0.0, lr=lr,
             trajectories_per_update=trajectories_per_update, seed=0,
             eval_interval=eval_interval, eval_n_episodes=eval_n_episodes,
-            mode=mode,
+            mode=mode, n_bootstrap=n_bootstrap,
         )
         effective_budget = _detect_saturation(
             sat_result['history'], max_budget,
@@ -709,7 +710,7 @@ def run_learning_curve_experiment(
                 trajectories_per_update=trajectories_per_update,
                 seed=seed, eval_interval=eval_interval,
                 eval_n_episodes=eval_n_episodes,
-                mode=mode,
+                mode=mode, n_bootstrap=n_bootstrap,
             )
             histories[cap].append(result['history'])
         rewards = [h[-1]['mean_reward'] for h in histories[cap] if h]
@@ -978,6 +979,7 @@ def run_learning_curve_experiment_zeta(
     saturation_window: int = 10,
     saturation_eps: float = 0.005,
     saturation_checks: int = 3,
+    n_bootstrap: int = 50,
 ) -> Dict[float, list]:
     """
     Learning curve experiment using the continuous zeta parameterisation.
@@ -1002,7 +1004,7 @@ def run_learning_curve_experiment_zeta(
             horizon=horizon, sample_budget=max_budget, alpha=0.0, lr=lr,
             trajectories_per_update=trajectories_per_update, seed=0,
             eval_interval=eval_interval, eval_n_episodes=eval_n_episodes,
-            mode=mode,
+            mode=mode, n_bootstrap=n_bootstrap,
         )
         effective_budget = _detect_saturation(
             sat_result['history'], max_budget,
@@ -1030,7 +1032,7 @@ def run_learning_curve_experiment_zeta(
                 seed=seed,
                 eval_interval=eval_interval,
                 eval_n_episodes=eval_n_episodes,
-                mode=mode,
+                mode=mode, n_bootstrap=n_bootstrap,
             )
             histories[zeta].append(result['history'])
         rewards = [h[-1]['mean_reward'] for h in histories[zeta] if h]
