@@ -262,16 +262,27 @@ def test_cosine_is_one_when_alpha_is_zero():
 
 
 def test_cosine_is_one_when_teacher_is_none():
-    """With no teacher signal, α has no effect and U_α == U_{α=0}."""
+    """With no teacher and 0 < α < 1, A_eff = (1-α)·G is a positive
+    scalar multiple of A_van = G, so U_α and U_van point the same way
+    and cos = +1. (α=1 with no teacher zeroes A_eff → cos is NaN, see
+    separate test.)"""
+    policy, trajs, _, _, gamma, start_idx, rng = _make_setup(seed=2)
+    result = update_direction_diagnostics(
+        policy, trajs, Q_mu=None, V_mu=None, alpha=0.5, gamma=gamma,
+        start_idx=start_idx, rng=rng, n_bootstrap=5,
+    )
+    assert result['cos_npg_dir'] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_cosine_is_nan_when_update_direction_is_zero():
+    """α=1 with no teacher zeros out A_eff, so U_α = 0 and cosine is
+    undefined — the helper must report NaN rather than crash."""
     policy, trajs, _, _, gamma, start_idx, rng = _make_setup(seed=2)
     result = update_direction_diagnostics(
         policy, trajs, Q_mu=None, V_mu=None, alpha=1.0, gamma=gamma,
         start_idx=start_idx, rng=rng, n_bootstrap=5,
     )
-    # α=1 with no teacher → A_eff = α·0 + (1-α)·G = G... wait, formula is
-    # A_eff = (1-α)·G + α·A_mu. With A_mu = 0 (no teacher), A_eff = (1-α)·G.
-    # So U_α is a scaled version of U_van, cosine is +1 (same direction).
-    assert result['cos_npg_dir'] == pytest.approx(1.0, abs=1e-9)
+    assert np.isnan(result['cos_npg_dir'])
 ```
 
 - [ ] **Step 2: Run tests**
@@ -741,16 +752,19 @@ def test_run_learning_curve_propagates_n_bootstrap():
     from tabular_prototype.environment import generate_equidistant_goals
     goals = generate_equidistant_goals(grid_size=5, n_goals=1, distance=2)
     out = run_learning_curve_experiment(
-        grid_size=5, goals=goals, teacher_capacity=1,
+        grid_size=5, goals=goals, teacher_capacities=[1],
         sample_budget=120, horizon=10, alpha=1.0, lr=0.5,
         n_seeds=1, mode='sample',
         trajectories_per_update=4, eval_interval=2,
         n_bootstrap=3,
     )
-    # The dict shape returned by run_learning_curve_experiment is a list
-    # of per-seed results dicts.
-    assert out, "expected at least one seed result"
-    h0 = out[0]['history'][0]
+    # run_learning_curve_experiment returns Dict[int, list] mapping
+    # teacher_capacity -> list of per-seed histories (each history is a
+    # list of per-eval step dicts).
+    assert out, "expected at least one capacity result"
+    assert 1 in out, "expected capacity=1 in results"
+    assert out[1], "expected at least one seed history"
+    h0 = out[1][0][0]
     assert 'cos_npg_dir' in h0
 ```
 
@@ -1289,6 +1303,7 @@ def test_run_npg_diagnostics_end_to_end():
                 '--n-seeds', '1',
                 '--n-bootstrap', '3',
                 '--grid-size', '3',
+                '--distance', '1',  # 3x3 grid only supports distance ∈ {1, 2}
                 '--override-budget', '40',
                 '--output-dir', tmp,
             ],
@@ -1366,7 +1381,7 @@ def _resolve_cell(args):
     n_goals_cap = 3
     if args.override_budget is not None:
         # Test/dev path: bypass calibration entirely.
-        from tabular_prototype.config import compute_exploration_thresholds
+        from tabular_prototype.environment import compute_exploration_thresholds
         h_val = compute_exploration_thresholds(args.grid_size)['horizon_small']
         return {
             'zeta': dict(budget=args.override_budget, h_val=h_val,
