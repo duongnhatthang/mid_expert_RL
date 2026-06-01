@@ -1403,14 +1403,18 @@ def plot_entropy_trajectory(
     plt.close(fig)
 
 
-def _build_npg_cosine_figure(
-    histories_by_teacher: Dict[Any, List[List[Dict[str, Any]]]],
+def _generic_metric_figure(
+    histories_by_teacher,
+    baseline_history_alpha_zero,
+    field: str,
     mode: str,
-    cell_info: Dict[str, Any],
+    cell_info: dict,
+    title_prefix: str,
+    ylabel: str,
+    footer: str,
 ):
-    """Build (but don't save) the cos(U_α, U_{α=0}) figure.
-
-    Returns the matplotlib Figure so tests can inspect titles / texts.
+    """Generic single-panel figure builder for {teacher → list of histories}
+    with optional α=0 baseline overlay. Returns the matplotlib figure.
     """
     import matplotlib.pyplot as plt
 
@@ -1432,103 +1436,10 @@ def _build_npg_cosine_figure(
             for seed_hist in histories
         ], axis=0)
         values = np.stack([
-            [h['cos_npg_dir'] for h in seed_hist[:min_len]]
+            [h[field] for h in seed_hist[:min_len]]
             for seed_hist in histories
         ], axis=0)
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', RuntimeWarning)
-            mean = np.nanmean(values, axis=0)
-            std = np.nanstd(values, axis=0)
-        label = (f'cap={tv}' if mode == 'capability'
-                 else f'ζ={tv}')
-        ax.plot(steps, mean, label=label, marker='o',
-                markersize=3, linewidth=1.5)
-        ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
-
-    ax.axhline(
-        1.0, color='black', linewidth=1.0, linestyle='--',
-        label='α=0 (reference)',
-    )
-    ax.set_xlabel('env step', fontsize=9)
-    ax.set_ylabel(
-        r'$\cos(U_\alpha,\,U_{\alpha=0})$  at same $\theta_t$',
-        fontsize=9,
-    )
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=8, loc='best')
-
-    h_val = cell_info['horizon']
-    h_type = cell_info['horizon_type']
-    fig.suptitle(
-        f'NPG update-direction cosine ({mode} sweep) — '
-        f"dist={cell_info['distance']}, H={h_val} ({h_type}), "
-        f"B={cell_info['sample_budget']}, "
-        rf"$\alpha={cell_info['alpha']}$",
-        fontsize=11,
-    )
-    fig.text(
-        0.5, 0.01,
-        r'$U = \hat F^{\dagger}\,\hat g$ on the per-step batch '
-        r'($\hat g_\alpha$ uses $A_i = (1-\alpha)G_i + \alpha A^\mu_i$)',
-        ha='center', fontsize=8,
-    )
-    fig.tight_layout(rect=[0, 0.04, 1, 0.95])
-    return fig
-
-
-def plot_npg_cosine(
-    histories_by_teacher: Dict[Any, List[List[Dict[str, Any]]]],
-    mode: str,
-    out_path: str,
-    cell_info: Dict[str, Any],
-) -> None:
-    """Single-panel figure of cos(U_α, U_{α=0}) per env step.
-
-    Args:
-        histories_by_teacher: dict mapping teacher value -> list of
-            per-seed history lists. Each history list is a list of
-            per-eval-tick dicts containing 'steps' and 'cos_npg_dir'.
-        mode: 'capability' or 'zeta' — controls label/sort ordering.
-        out_path: full PNG output path.
-        cell_info: must contain keys distance, horizon, horizon_type,
-            sample_budget, alpha.
-    """
-    import os
-    import matplotlib.pyplot as plt
-
-    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
-
-    fig = _build_npg_cosine_figure(histories_by_teacher, mode, cell_info)
-    fig.savefig(out_path, dpi=120)
-    plt.close(fig)
-
-
-def _build_npg_var_trace_figure(
-    histories_by_teacher, baseline_history_alpha_zero,
-    mode, cell_info, n_bootstrap,
-):
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(7.5, 4.2))
-
-    sorted_teachers = sorted(
-        histories_by_teacher.keys(), key=lambda k: (k is None, k),
-    )
-    for tv in sorted_teachers:
-        histories = histories_by_teacher[tv]
-        if not histories:
-            continue
-        min_len = min(len(h) for h in histories)
-        if min_len == 0:
-            continue
-        steps = np.mean([
-            [h['steps'] for h in seed_hist[:min_len]]
-            for seed_hist in histories
-        ], axis=0)
-        values = np.stack([
-            [h['var_U_trace'] for h in seed_hist[:min_len]]
-            for seed_hist in histories
-        ], axis=0)
-        with warnings.catch_warnings():
+        with np.errstate(all='ignore'), warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
             mean = np.nanmean(values, axis=0)
             std = np.nanstd(values, axis=0)
@@ -1547,10 +1458,10 @@ def _build_npg_var_trace_figure(
                 for seed_hist in bh
             ], axis=0)
             vals_b = np.stack([
-                [h['var_U_trace'] for h in seed_hist[:min_len]]
+                [h[field] for h in seed_hist[:min_len]]
                 for seed_hist in bh
             ], axis=0)
-            with warnings.catch_warnings():
+            with np.errstate(all='ignore'), warnings.catch_warnings():
                 warnings.simplefilter('ignore', RuntimeWarning)
                 mean_b = np.nanmean(vals_b, axis=0)
                 std_b = np.nanstd(vals_b, axis=0)
@@ -1560,138 +1471,135 @@ def _build_npg_var_trace_figure(
                             color='black', alpha=0.1)
 
     ax.set_xlabel('env step', fontsize=9)
-    ax.set_ylabel(r'$\sum_{s,a}\mathrm{Var}_b(U_b)$', fontsize=9)
+    ax.set_ylabel(ylabel, fontsize=9)
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8, loc='best')
 
     h_val = cell_info['horizon']
     h_type = cell_info['horizon_type']
     fig.suptitle(
-        f'NPG update-direction trace variance ({mode} sweep) — '
+        f'{title_prefix} ({mode} sweep) — '
         f"dist={cell_info['distance']}, H={h_val} ({h_type}), "
         f"B={cell_info['sample_budget']}, "
         rf"$\alpha={cell_info['alpha']}$",
         fontsize=11,
     )
-    fig.text(
-        0.5, 0.01,
-        f'Var across B={n_bootstrap} trajectory-level bootstrap resamples '
-        f'of the per-step trajectory batch (no extra rollouts)',
-        ha='center', fontsize=8,
-    )
+    fig.text(0.5, 0.01, footer, ha='center', fontsize=8)
     fig.tight_layout(rect=[0, 0.04, 1, 0.95])
     return fig
 
 
-def _build_npg_var_s0_figure(
-    histories_by_teacher, baseline_history_alpha_zero,
-    mode, cell_info, n_bootstrap,
-):
+def plot_pg_cosine(
+    histories_by_teacher,
+    mode: str,
+    out_path: str,
+    cell_info: dict,
+) -> None:
+    """Sample-mode cos(ĝ_α, ĝ_{α=0}) figure. Single panel."""
+    import os
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(2, 2, figsize=(9, 6), sharex=True)
-    action_labels = ['↑ (a=0)', '→ (a=1)', '↓ (a=2)', '← (a=3)']
-
-    sorted_teachers = sorted(
-        histories_by_teacher.keys(), key=lambda k: (k is None, k),
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig = _generic_metric_figure(
+        histories_by_teacher,
+        baseline_history_alpha_zero=None,  # cosine α=0 baseline is trivially 1.0
+        field='cos_pg_dir',
+        mode=mode,
+        cell_info=cell_info,
+        title_prefix='PG update-direction cosine — sample mode',
+        ylabel=r'$\cos(\hat g_\alpha,\,\hat g_{\alpha=0})$  at same $\theta_t$',
+        footer=(r'$\hat g = \sum_i A_i \psi_i$ is the sample-mode PG step '
+                r'(not the exact-mode NPG direction $U = F^{-1} g$).'),
     )
-
-    for a, ax in enumerate(axes.flatten()):
-        field = f'var_U_s0_a{a}'
-        for tv in sorted_teachers:
-            histories = histories_by_teacher[tv]
-            if not histories:
-                continue
-            min_len = min(len(h) for h in histories)
-            if min_len == 0:
-                continue
-            steps = np.mean([
-                [h['steps'] for h in seed_hist[:min_len]]
-                for seed_hist in histories
-            ], axis=0)
-            values = np.stack([
-                [h[field] for h in seed_hist[:min_len]]
-                for seed_hist in histories
-            ], axis=0)
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', RuntimeWarning)
-                mean = np.nanmean(values, axis=0)
-                std = np.nanstd(values, axis=0)
-            label = (f'cap={tv}' if mode == 'capability'
-                     else f'ζ={tv}')
-            ax.plot(steps, mean, label=label, marker='o',
-                    markersize=2.5, linewidth=1.3)
-            ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
-
-        if baseline_history_alpha_zero:
-            bh = baseline_history_alpha_zero
-            min_len = min(len(h) for h in bh)
-            if min_len > 0:
-                steps_b = np.mean([
-                    [h['steps'] for h in seed_hist[:min_len]]
-                    for seed_hist in bh
-                ], axis=0)
-                vals_b = np.stack([
-                    [h[field] for h in seed_hist[:min_len]]
-                    for seed_hist in bh
-                ], axis=0)
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore', RuntimeWarning)
-                    mean_b = np.nanmean(vals_b, axis=0)
-                ax.plot(steps_b, mean_b, color='black',
-                        linestyle='--', linewidth=1.3,
-                        label='α=0 (vanilla NPG)')
-
-        ax.set_title(action_labels[a], fontsize=9)
-        ax.grid(True, alpha=0.3)
-        ax.set_ylabel(rf'$\mathrm{{Var}}_b(U_b[s_0,\,{a}])$', fontsize=8)
-
-    for ax in axes[-1, :]:
-        ax.set_xlabel('env step', fontsize=9)
-    axes[0, 0].legend(fontsize=7, loc='best')
-
-    h_val = cell_info['horizon']
-    h_type = cell_info['horizon_type']
-    fig.suptitle(
-        f'NPG update-direction variance at start state s₀ '
-        f'({mode} sweep) — '
-        f"dist={cell_info['distance']}, H={h_val} ({h_type}), "
-        f"B={cell_info['sample_budget']}, "
-        rf"$\alpha={cell_info['alpha']}$",
-        fontsize=11,
-    )
-    fig.text(
-        0.5, 0.01,
-        f'Var across B={n_bootstrap} trajectory-level bootstrap resamples '
-        f'of the per-step trajectory batch (no extra rollouts)',
-        ha='center', fontsize=8,
-    )
-    fig.tight_layout(rect=[0, 0.04, 1, 0.95])
-    return fig
+    # Add α=0 reference line at y=1.
+    ax = fig.axes[0]
+    ax.axhline(1.0, color='black', linewidth=1.0, linestyle='--',
+               label='α=0 (reference)')
+    ax.legend(fontsize=8, loc='best')
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
 
 
-def plot_npg_variance(
-    histories_by_teacher: Dict[Any, List[List[Dict[str, Any]]]],
-    baseline_history_alpha_zero: List[List[Dict[str, Any]]],
+def plot_pg_variance(
+    histories_by_teacher,
+    baseline_history_alpha_zero,
     mode: str,
     out_dir: str,
-    cell_info: Dict[str, Any],
-    n_bootstrap: int = 50,
+    cell_info: dict,
 ) -> None:
-    """Two PNGs: total Var[U] trace + per-action Var[U] at s₀ (2x2)."""
+    """Sample-mode variance figures. Writes pg_var_trace.png and
+    pg_var_visited.png."""
     import os
     import matplotlib.pyplot as plt
     os.makedirs(out_dir, exist_ok=True)
 
-    fig_trace = _build_npg_var_trace_figure(
-        histories_by_teacher, baseline_history_alpha_zero,
-        mode, cell_info, n_bootstrap,
+    fig_trace = _generic_metric_figure(
+        histories_by_teacher,
+        baseline_history_alpha_zero,
+        field='var_g_trace',
+        mode=mode,
+        cell_info=cell_info,
+        title_prefix='PG update-direction trace variance — sample mode',
+        ylabel=r'$\sum_{s,a}\mathrm{Var}_\tau(\hat g_\tau[s,a])$',
+        footer='Variance across the n trajectories of this step (per-trajectory ĝ_τ).',
     )
-    fig_trace.savefig(os.path.join(out_dir, 'npg_var_trace.png'), dpi=120)
+    fig_trace.savefig(os.path.join(out_dir, 'pg_var_trace.png'), dpi=120)
     plt.close(fig_trace)
 
-    fig_s0 = _build_npg_var_s0_figure(
-        histories_by_teacher, baseline_history_alpha_zero,
-        mode, cell_info, n_bootstrap,
+    fig_visited = _generic_metric_figure(
+        histories_by_teacher,
+        baseline_history_alpha_zero,
+        field='var_g_visited',
+        mode=mode,
+        cell_info=cell_info,
+        title_prefix='PG update-direction visitation-weighted variance — sample mode',
+        ylabel=(r'$\mathbb{E}_\tau\left[\sum_t '
+                r'\mathrm{Var}_{\tau\prime}(\hat g_{\tau\prime}[s_t,a_t])\right]$'),
+        footer='Variance weighted by per-trajectory visitation (multiset).',
     )
-    fig_s0.savefig(os.path.join(out_dir, 'npg_var_s0.png'), dpi=120)
-    plt.close(fig_s0)
+    fig_visited.savefig(os.path.join(out_dir, 'pg_var_visited.png'), dpi=120)
+    plt.close(fig_visited)
+
+
+def plot_u_cosine(
+    histories_by_teacher,
+    mode: str,
+    out_path: str,
+    cell_info: dict,
+    centering: str,  # 'npg' or 'pinv'
+) -> None:
+    """Exact-mode cos(U_α, U_{α=0}) figure for a specified centering."""
+    import os
+    import matplotlib.pyplot as plt
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+
+    if centering == 'npg':
+        field = 'cos_u_npg'
+        title_prefix = 'NPG direction cosine (π-centered) — exact mode'
+        ylabel = r'$\cos(U^{(\mathrm{NPG})}_\alpha,\,U^{(\mathrm{NPG})}_{\alpha=0})$'
+        footer = (r'$U^{(\mathrm{NPG})}[s,a] = A_{\mathrm{eff}}(s,a) - V_{\mathrm{eff}}(s)$, '
+                  r'$V_{\mathrm{eff}}(s) = \sum_{a\prime}\pi(a\prime|s) A_{\mathrm{eff}}(s,a\prime)$.')
+    elif centering == 'pinv':
+        field = 'cos_u_pinv'
+        title_prefix = 'NPG direction cosine (uniform-centered) — exact mode'
+        ylabel = r'$\cos(U^{(\dagger)}_\alpha,\,U^{(\dagger)}_{\alpha=0})$'
+        footer = (r'$U^{(\dagger)}[s,a] = A_{\mathrm{eff}}(s,a) - \frac{1}{A}\sum_{a\prime} A_{\mathrm{eff}}(s,a\prime)$ '
+                  r'(strict Moore-Penrose pseudoinverse of $F$).')
+    else:
+        raise ValueError(f"centering must be 'npg' or 'pinv', got {centering}")
+
+    fig = _generic_metric_figure(
+        histories_by_teacher,
+        baseline_history_alpha_zero=None,
+        field=field,
+        mode=mode,
+        cell_info=cell_info,
+        title_prefix=title_prefix,
+        ylabel=ylabel,
+        footer=footer,
+    )
+    ax = fig.axes[0]
+    ax.axhline(1.0, color='black', linewidth=1.0, linestyle='--',
+               label='α=0 (reference)')
+    ax.legend(fontsize=8, loc='best')
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)

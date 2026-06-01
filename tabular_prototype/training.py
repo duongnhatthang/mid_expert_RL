@@ -254,52 +254,8 @@ def exact_npg_update(
 
 
 # =========================================================================
-# NPG update-direction diagnostic
+# PG / NPG update-direction diagnostics
 # =========================================================================
-
-def _compute_U_per_state(
-    per_traj: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
-    traj_indices: np.ndarray,
-    alpha: float,
-    policy: TabularSoftmaxPolicy,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute (U_α, U_{α=0}) on the trajectories indexed by traj_indices.
-
-    Shared between update_direction_diagnostics (bootstrap loop) and
-    _update_direction_full_batch (testing surface).
-    """
-    n_states, n_actions = policy.theta.shape
-    if len(traj_indices) == 0:
-        return (np.zeros((n_states, n_actions)),
-                np.zeros((n_states, n_actions)))
-    s_all = np.concatenate([per_traj[i][0] for i in traj_indices])
-    a_all = np.concatenate([per_traj[i][1] for i in traj_indices])
-    G_all = np.concatenate([per_traj[i][2] for i in traj_indices])
-    Amu_all = np.concatenate([per_traj[i][3] for i in traj_indices])
-    if len(s_all) == 0:
-        return (np.zeros((n_states, n_actions)),
-                np.zeros((n_states, n_actions)))
-
-    A_eff = (1.0 - alpha) * G_all + alpha * Amu_all
-    A_van = G_all
-
-    U_alpha = np.zeros((n_states, n_actions))
-    U_van = np.zeros((n_states, n_actions))
-    for s in np.unique(s_all):
-        mask = s_all == s
-        actions_s = a_all[mask]
-        pi_s = policy.get_probs(int(s))
-        psi_mat = np.zeros((len(actions_s), n_actions))
-        psi_mat[np.arange(len(actions_s)), actions_s] = 1.0
-        psi_mat -= pi_s[None, :]
-        F_s = psi_mat.T @ psi_mat
-        g_alpha_s = psi_mat.T @ A_eff[mask]
-        g_van_s = psi_mat.T @ A_van[mask]
-        F_s_pinv = np.linalg.pinv(F_s)
-        U_alpha[int(s)] = F_s_pinv @ g_alpha_s
-        U_van[int(s)] = F_s_pinv @ g_van_s
-    return U_alpha, U_van
-
 
 def update_direction_diagnostics(
     policy: TabularSoftmaxPolicy,
@@ -309,120 +265,149 @@ def update_direction_diagnostics(
     alpha: float,
     gamma: float,
     start_idx: int,
-    rng: np.random.Generator,
-    n_bootstrap: int = 50,
 ) -> dict:
-    """Compute U = F̂⁺ ĝ_α and its trajectory-bootstrap variance.
+    """Sample-mode PG-direction diagnostics computed from the per-step
+    trajectory batch.
 
-    Returns six per-step scalars:
-        cos_npg_dir       cos(U_α, U_{α=0})  at the same θ_t (same batch).
-                          NaN if either norm is zero.
-        var_U_trace       Σ_{s,a} Var_b(U_b[s,a])  across n_bootstrap trajectory-
-                          level bootstrap resamples of the current batch.
-        var_U_s0_a{0..3}  Var_b(U_b[s₀, a])  for each action a.
+    For each trajectory τ in the batch, build
+        ĝ_τ[s, a] = Σ_t A_t · ψ_t[s, a]
+    where A_t = (1-α)·G_t + α·A^μ(s_t, a_t), G_t is the Monte Carlo return
+    from t to end of τ, and ψ_t[s, a] = 𝟙(s=s_t) · (𝟙(a=a_t) - π(a|s_t)).
+
+    Batch mean: ĝ_α = (1/n) Σ_τ ĝ_τ. Same construction with α=0 gives ĝ_van.
+
+    Returns:
+        cos_pg_dir: cos(ĝ_α, ĝ_van) on flattened batch-mean vectors. NaN if
+            either has zero norm.
+        var_g_trace: Σ_{s,a} Var_τ(ĝ_τ[s,a]) - total per-trajectory variance.
+        var_g_visited: (1/n) Σ_τ Σ_t Var_τ'(ĝ_τ'[s_t, a_t])
+                     = Σ_{s,a} Var_τ(ĝ_τ[s,a]) · n̂[s,a]
+            where n̂[s,a] is the average visit count per trajectory at (s,a)
+            (multiset weighting).
+
+    `start_idx` is accepted for API parity with prior versions but not used.
     """
+    del start_idx  # signature parity only
     n_states, n_actions = policy.theta.shape
-
-    # Per-trajectory cached arrays: (s_idx, a_idx, G_t, A_mu).
-    per_traj: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
-    has_teacher = Q_mu is not None and V_mu is not None
-    for traj in trajectories:
-        if len(traj) == 0:
-            per_traj.append((
-                np.empty(0, dtype=int), np.empty(0, dtype=int),
-                np.empty(0), np.empty(0),
-            ))
-            continue
-        G = np.array(estimate_returns(traj, gamma), dtype=float)
-        s_arr = np.array([t.state_idx for t in traj], dtype=int)
-        a_arr = np.array([t.action for t in traj], dtype=int)
-        if has_teacher:
-            A_mu = np.array(
-                [get_teacher_advantage(Q_mu, V_mu, int(s), int(a))
-                 for s, a in zip(s_arr, a_arr)], dtype=float,
-            )
-        else:
-            A_mu = np.zeros_like(G)
-        per_traj.append((s_arr, a_arr, G, A_mu))
-
-    # Point estimate on the full batch (for cosine).
     n_traj = len(trajectories)
-    full_indices = np.arange(n_traj)
-    U_alpha_full, U_van_full = _compute_U_per_state(
-        per_traj, full_indices, alpha, policy,
-    )
+    has_teacher = Q_mu is not None and V_mu is not None
 
-    a_flat = U_alpha_full.reshape(-1)
-    v_flat = U_van_full.reshape(-1)
+    # Per-trajectory ĝ arrays.
+    g_alpha = np.zeros((n_traj, n_states, n_actions))
+    g_van = np.zeros((n_traj, n_states, n_actions))
+    # Per-trajectory visit counts (multiset).
+    visits = np.zeros((n_traj, n_states, n_actions), dtype=float)
+
+    for tau_idx, traj in enumerate(trajectories):
+        if not traj:
+            continue
+        G = estimate_returns(traj, gamma)
+        for t, trans in enumerate(traj):
+            s = trans.state_idx
+            a = trans.action
+            G_t = G[t]
+            if has_teacher:
+                A_mu = get_teacher_advantage(Q_mu, V_mu, s, a)
+            else:
+                A_mu = 0.0
+            A_eff = (1.0 - alpha) * G_t + alpha * A_mu
+            A_van = G_t
+
+            pi_s = policy.get_probs(s)
+            # ψ at row s: e_a - π(·|s).
+            psi_row = -pi_s.copy()
+            psi_row[a] += 1.0
+
+            g_alpha[tau_idx, s, :] += A_eff * psi_row
+            g_van[tau_idx, s, :] += A_van * psi_row
+
+            visits[tau_idx, s, a] += 1.0
+
+    # Batch means.
+    g_alpha_mean = g_alpha.mean(axis=0) if n_traj > 0 else np.zeros((n_states, n_actions))
+    g_van_mean = g_van.mean(axis=0) if n_traj > 0 else np.zeros((n_states, n_actions))
+
+    # Cosine.
+    a_flat = g_alpha_mean.reshape(-1)
+    v_flat = g_van_mean.reshape(-1)
     a_norm = float(np.linalg.norm(a_flat))
     v_norm = float(np.linalg.norm(v_flat))
     if a_norm > 0.0 and v_norm > 0.0:
-        cos_npg_dir = float(a_flat @ v_flat / (a_norm * v_norm))
+        cos_pg_dir = float(a_flat @ v_flat / (a_norm * v_norm))
     else:
-        cos_npg_dir = float('nan')
+        cos_pg_dir = float('nan')
 
-    # Bootstrap U_α only (we don't need variance of the α=0 direction).
-    if n_traj > 0 and n_bootstrap > 0:
-        U_boots = np.zeros((n_bootstrap, n_states, n_actions))
-        for b in range(n_bootstrap):
-            idx = rng.integers(0, n_traj, size=n_traj)
-            U_b, _ = _compute_U_per_state(per_traj, idx, alpha, policy)
-            U_boots[b] = U_b
-        U_var = U_boots.var(axis=0)
+    # Per-cell variance across τ.
+    if n_traj > 0:
+        g_var = g_alpha.var(axis=0)
+        mean_visits = visits.mean(axis=0)
     else:
-        U_var = np.zeros((n_states, n_actions))
+        g_var = np.zeros((n_states, n_actions))
+        mean_visits = np.zeros((n_states, n_actions))
 
-    result = {
-        'cos_npg_dir': cos_npg_dir,
-        'var_U_trace': float(U_var.sum()),
+    var_g_trace = float(g_var.sum())
+    var_g_visited = float((g_var * mean_visits).sum())
+
+    return {
+        'cos_pg_dir': cos_pg_dir,
+        'var_g_trace': var_g_trace,
+        'var_g_visited': var_g_visited,
     }
-    s0_var = U_var[int(start_idx)]
-    for a in range(4):
-        result[f'var_U_s0_a{a}'] = float(s0_var[a]) if a < n_actions else 0.0
-    return result
 
 
-def _update_direction_full_batch(
+def exact_direction_diagnostics(
     policy: TabularSoftmaxPolicy,
-    trajectories: List[List[Transition]],
+    Q_pi: np.ndarray,
     Q_mu: Optional[np.ndarray],
     V_mu: Optional[np.ndarray],
     alpha: float,
-    gamma: float,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Return (U_α, U_{α=0}) on the full batch.
+) -> dict:
+    """Exact-mode NPG-direction diagnostics at θ_t.
 
-    Exposed for testing the softmax-tangent property; production code
-    should call `update_direction_diagnostics`.
+    Computes A_eff(s, a) = (1-α) Q^π(s, a) + α A^μ(s, a) over all (s, a),
+    then two centerings:
+        U^(NPG)[s, a] = A_eff[s, a] - V_eff(s)      (π-weighted centering)
+        U^(pinv)[s, a] = A_eff[s, a] - mean_a' A_eff[s, a']  (uniform centering;
+                                                              strict F^† g)
+    where V_eff(s) = Σ_a' π(a'|s) A_eff(s, a').
+
+    Returns cos(U_α, U_{α=0}) for each centering. The α=0 baseline uses
+    A_eff(α=0) = Q^π.
     """
-    # Build per_traj cache identically to update_direction_diagnostics
     n_states, n_actions = policy.theta.shape
-    has_teacher = Q_mu is not None and V_mu is not None
-    per_traj: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
-    for traj in trajectories:
-        if len(traj) == 0:
-            per_traj.append((
-                np.empty(0, dtype=int), np.empty(0, dtype=int),
-                np.empty(0), np.empty(0),
-            ))
-            continue
-        G = np.array(estimate_returns(traj, gamma), dtype=float)
-        s_arr = np.array([t.state_idx for t in traj], dtype=int)
-        a_arr = np.array([t.action for t in traj], dtype=int)
-        if has_teacher:
-            A_mu = np.array(
-                [get_teacher_advantage(Q_mu, V_mu, int(s), int(a))
-                 for s, a in zip(s_arr, a_arr)], dtype=float,
-            )
-        else:
-            A_mu = np.zeros_like(G)
-        per_traj.append((s_arr, a_arr, G, A_mu))
-    if not per_traj:
-        return (np.zeros((n_states, n_actions)),
-                np.zeros((n_states, n_actions)))
-    return _compute_U_per_state(
-        per_traj, np.arange(len(per_traj)), alpha, policy,
-    )
+    pi = np.stack([policy.get_probs(s) for s in range(n_states)])  # (S, A)
+
+    if Q_mu is not None and V_mu is not None:
+        A_mu = Q_mu - V_mu[:, None]
+    else:
+        A_mu = np.zeros_like(Q_pi)
+
+    A_eff_alpha = (1.0 - alpha) * Q_pi + alpha * A_mu
+    A_eff_van = Q_pi.copy()  # α=0
+
+    # π-centered (classical NPG / advantage form).
+    V_eff_alpha = (pi * A_eff_alpha).sum(axis=1, keepdims=True)
+    V_eff_van = (pi * A_eff_van).sum(axis=1, keepdims=True)
+    U_npg_alpha = A_eff_alpha - V_eff_alpha
+    U_npg_van = A_eff_van - V_eff_van
+
+    # Uniform-centered (strict Moore-Penrose pinv of F̂ g).
+    U_pinv_alpha = A_eff_alpha - A_eff_alpha.mean(axis=1, keepdims=True)
+    U_pinv_van = A_eff_van - A_eff_van.mean(axis=1, keepdims=True)
+
+    def _cos(x: np.ndarray, y: np.ndarray) -> float:
+        xf = x.reshape(-1)
+        yf = y.reshape(-1)
+        xn = float(np.linalg.norm(xf))
+        yn = float(np.linalg.norm(yf))
+        if xn > 0.0 and yn > 0.0:
+            return float(xf @ yf / (xn * yn))
+        return float('nan')
+
+    return {
+        'cos_u_npg': _cos(U_npg_alpha, U_npg_van),
+        'cos_u_pinv': _cos(U_pinv_alpha, U_pinv_van),
+    }
 
 
 def evaluate_policy(

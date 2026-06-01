@@ -1,90 +1,60 @@
-"""Integration test: sample-mode run_experiment emits the six NPG diag fields."""
+"""Integration tests: run_experiment emits the right diagnostic fields."""
 import numpy as np
 
 from tabular_prototype.environment import generate_equidistant_goals
-from tabular_prototype.experiments import run_experiment
+from tabular_prototype.experiments import run_experiment, run_learning_curve_experiment
 
 
-def test_sample_mode_history_includes_npg_diag_fields():
+def test_sample_mode_history_includes_pg_diag_fields():
     goals = generate_equidistant_goals(grid_size=5, n_goals=1, distance=2)
     result = run_experiment(
-        grid_size=5,
-        goals=goals,
-        teacher_capacity=1,
-        sample_budget=120,
-        horizon=10,
-        alpha=1.0,
-        lr=0.5,
-        seed=0,
-        mode='sample',
-        trajectories_per_update=4,
-        eval_interval=2,
-        n_bootstrap=5,
+        grid_size=5, goals=goals, teacher_capacity=1, sample_budget=120,
+        horizon=10, alpha=1.0, lr=0.5, seed=0, mode='sample',
+        trajectories_per_update=4, eval_interval=2,
+        pg_diag_enabled=True,
     )
-    assert result['history'], "expected non-empty history"
     h0 = result['history'][0]
-    for k in ('cos_npg_dir', 'var_U_trace',
-              'var_U_s0_a0', 'var_U_s0_a1', 'var_U_s0_a2', 'var_U_s0_a3'):
-        assert k in h0, f"missing key: {k}"
+    for k in ('cos_pg_dir', 'var_g_trace', 'var_g_visited'):
+        assert k in h0
 
 
-def test_exact_mode_does_not_emit_npg_diag_fields():
-    """Diagnostic is sample-mode only; exact mode should not have these keys."""
+def test_exact_mode_history_includes_u_cos_fields_when_enabled():
     goals = generate_equidistant_goals(grid_size=5, n_goals=1, distance=2)
     result = run_experiment(
-        grid_size=5,
-        goals=goals,
-        teacher_capacity=1,
-        sample_budget=10,  # 10 update steps in exact mode
-        horizon=10,
-        alpha=1.0,
-        lr=0.5,
-        seed=0,
-        mode='exact',
+        grid_size=5, goals=goals, teacher_capacity=1, sample_budget=10,
+        horizon=10, alpha=1.0, lr=0.5, seed=0, mode='exact',
         eval_interval=2,
+        pg_diag_enabled=True,
     )
     h0 = result['history'][0]
-    assert 'cos_npg_dir' not in h0
+    for k in ('cos_u_npg', 'cos_u_pinv'):
+        assert k in h0
 
 
-def test_sample_mode_skips_npg_diag_when_n_bootstrap_is_zero():
-    """When n_bootstrap=0 (the default), sample mode preserves the legacy
-    history schema — no NPG-direction keys appear."""
+def test_disabled_modes_omit_diag_fields():
     goals = generate_equidistant_goals(grid_size=5, n_goals=1, distance=2)
-    result = run_experiment(
-        grid_size=5,
-        goals=goals,
-        teacher_capacity=1,
-        sample_budget=120,
-        horizon=10,
-        alpha=1.0,
-        lr=0.5,
-        seed=0,
-        mode='sample',
-        trajectories_per_update=4,
-        eval_interval=2,
-        # n_bootstrap omitted → default 0
-    )
-    h0 = result['history'][0]
-    assert 'cos_npg_dir' not in h0
+    for mode in ('sample', 'exact'):
+        sb = 120 if mode == 'sample' else 10
+        result = run_experiment(
+            grid_size=5, goals=goals, teacher_capacity=1, sample_budget=sb,
+            horizon=10, alpha=1.0, lr=0.5, seed=0, mode=mode,
+            trajectories_per_update=4, eval_interval=2,
+            # pg_diag_enabled omitted → default False
+        )
+        h0 = result['history'][0]
+        assert 'cos_pg_dir' not in h0
+        assert 'cos_u_npg' not in h0
+        assert 'cos_u_pinv' not in h0
 
 
-def test_run_learning_curve_propagates_n_bootstrap():
-    from tabular_prototype.experiments import run_learning_curve_experiment
-    from tabular_prototype.environment import generate_equidistant_goals
+def test_run_learning_curve_propagates_pg_diag_enabled():
     goals = generate_equidistant_goals(grid_size=5, n_goals=1, distance=2)
     out = run_learning_curve_experiment(
         grid_size=5, goals=goals, teacher_capacities=[1],
         sample_budget=120, horizon=10, alpha=1.0, lr=0.5,
         n_seeds=1, mode='sample',
         trajectories_per_update=4, eval_interval=2,
-        n_bootstrap=3,
+        pg_diag_enabled=True,
     )
-    # run_learning_curve_experiment returns Dict[int, list] mapping
-    # teacher_capacity -> list of per-seed histories (each history is a
-    # list of per-eval step dicts).
-    assert out, "expected at least one capacity result"
-    assert 1 in out, "expected capacity=1 in results"
-    assert out[1], "expected at least one seed history"
     h0 = out[1][0][0]
-    assert 'cos_npg_dir' in h0
+    assert 'cos_pg_dir' in h0
