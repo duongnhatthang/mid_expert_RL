@@ -1478,14 +1478,14 @@ def _generic_metric_figure(
     h_val = cell_info['horizon']
     h_type = cell_info['horizon_type']
     fig.suptitle(
-        f'{title_prefix} ({mode} sweep) — '
+        f'{title_prefix} ({mode} sweep)\n'
         f"dist={cell_info['distance']}, H={h_val} ({h_type}), "
         f"B={cell_info['sample_budget']}, "
         rf"$\alpha={cell_info['alpha']}$",
-        fontsize=11,
+        fontsize=10,
     )
     fig.text(0.5, 0.01, footer, ha='center', fontsize=8)
-    fig.tight_layout(rect=[0, 0.04, 1, 0.95])
+    fig.tight_layout(rect=[0, 0.04, 1, 0.92])
     return fig
 
 

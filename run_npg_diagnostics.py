@@ -114,8 +114,8 @@ def _run_one(args, training_mode, sweep_mode, cell, alpha, tv, seed):
         grid_size=args.grid_size, goals=goals, lr=cell['lr'],
         horizon=cell['h_val'], sample_budget=cell['budget'],
         mode=training_mode, seed=seed,
-        eval_interval=5, alpha=alpha,
-        trajectories_per_update=cell['tpu'],
+        eval_interval=1, alpha=alpha,
+        trajectories_per_update=(cell['tpu'] if args.override_tpu == 0 else args.override_tpu),
         pg_diag_enabled=True,
     )
     if sweep_mode == 'zeta':
@@ -140,6 +140,13 @@ def main():
     parser.add_argument('--horizon-type', type=str, default='small')
     parser.add_argument('--grid-size', type=int, default=9)
     parser.add_argument('--override-budget', type=int, default=None)
+    parser.add_argument(
+        '--override-tpu', type=int, default=10,
+        help='Override trajectories_per_update for diagnostic runs '
+             '(default 10; calibrated value is typically 1 and makes '
+             'per-trajectory variance meaningless). Set to 0 to use '
+             'the calibrated value.',
+    )
     args = parser.parse_args()
 
     training_modes = [m.strip() for m in args.training_modes.split(',')
