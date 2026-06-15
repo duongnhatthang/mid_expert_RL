@@ -14,7 +14,7 @@ def test_sample_mode_history_includes_pg_diag_fields():
         pg_diag_enabled=True,
     )
     h0 = result['history'][0]
-    for k in ('cos_pg_dir', 'var_g_trace', 'var_g_visited'):
+    for k in ('pg_bias', 'var_g_trace', 'var_g_visited'):
         assert k in h0
 
 
@@ -27,7 +27,7 @@ def test_exact_mode_history_includes_u_cos_fields_when_enabled():
         pg_diag_enabled=True,
     )
     h0 = result['history'][0]
-    for k in ('cos_u_npg', 'cos_u_pinv'):
+    for k in ('u_bias_npg', 'u_bias_pinv'):
         assert k in h0
 
 
@@ -42,9 +42,9 @@ def test_disabled_modes_omit_diag_fields():
             # pg_diag_enabled omitted → default False
         )
         h0 = result['history'][0]
-        assert 'cos_pg_dir' not in h0
-        assert 'cos_u_npg' not in h0
-        assert 'cos_u_pinv' not in h0
+        assert 'pg_bias' not in h0
+        assert 'u_bias_npg' not in h0
+        assert 'u_bias_pinv' not in h0
 
 
 def test_run_learning_curve_propagates_pg_diag_enabled():
@@ -57,4 +57,4 @@ def test_run_learning_curve_propagates_pg_diag_enabled():
         pg_diag_enabled=True,
     )
     h0 = out[1][0][0]
-    assert 'cos_pg_dir' in h0
+    assert 'pg_bias' in h0

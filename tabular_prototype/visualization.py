@@ -1495,24 +1495,28 @@ def plot_pg_cosine(
     out_path: str,
     cell_info: dict,
 ) -> None:
-    """Sample-mode cos(ĝ_α, ĝ_{α=0}) figure. Single panel."""
+    """Sample-mode bias (-cos(ū_α, ū_{α=0})) figure. Single panel.
+
+    ū_x = mean_τ(ĝ_τ,x / ‖ĝ_τ,x‖) is the average normalized
+    per-trajectory PG direction.
+    """
     import os
     import matplotlib.pyplot as plt
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
     fig = _generic_metric_figure(
         histories_by_teacher,
-        baseline_history_alpha_zero=None,  # cosine α=0 baseline is trivially 1.0
-        field='cos_pg_dir',
+        baseline_history_alpha_zero=None,
+        field='pg_bias',
         mode=mode,
         cell_info=cell_info,
-        title_prefix='PG update-direction cosine — sample mode',
-        ylabel=r'$\cos(\hat g_\alpha,\,\hat g_{\alpha=0})$  at same $\theta_t$',
-        footer=(r'$\hat g = \sum_i A_i \psi_i$ is the sample-mode PG step '
-                r'(not the exact-mode NPG direction $U = F^{-1} g$).'),
+        title_prefix='PG update-direction bias — sample mode',
+        ylabel=r'$-\cos(\bar u_\alpha,\,\bar u_{\alpha=0})$  where  $\bar u_x = \mathbb{E}_\tau\!\left[\hat g_{\tau,x}/\|\hat g_{\tau,x}\|\right]$',
+        footer=(r'$\hat g_\tau$ normalized per trajectory before averaging; '
+                r'higher = more biased away from vanilla NPG.'),
     )
-    # Add α=0 reference line at y=1.
+    # Reference line at y=-1: α=0 self-bias = -1 (perfect alignment).
     ax = fig.axes[0]
-    ax.axhline(1.0, color='black', linewidth=1.0, linestyle='--',
+    ax.axhline(-1.0, color='black', linewidth=1.0, linestyle='--',
                label='α=0 (reference)')
     ax.legend(fontsize=8, loc='best')
     fig.savefig(out_path, dpi=120)
@@ -1526,8 +1530,8 @@ def plot_pg_variance(
     out_dir: str,
     cell_info: dict,
 ) -> None:
-    """Sample-mode variance figures. Writes pg_var_trace.png and
-    pg_var_visited.png."""
+    """Sample-mode normalized variance figures. Writes pg_var_trace.png
+    and pg_var_visited.png."""
     import os
     import matplotlib.pyplot as plt
     os.makedirs(out_dir, exist_ok=True)
@@ -1538,9 +1542,9 @@ def plot_pg_variance(
         field='var_g_trace',
         mode=mode,
         cell_info=cell_info,
-        title_prefix='PG update-direction trace variance — sample mode',
-        ylabel=r'$\sum_{s,a}\mathrm{Var}_\tau(\hat g_\tau[s,a])$',
-        footer='Variance across the n trajectories of this step (per-trajectory ĝ_τ).',
+        title_prefix='PG normalized-direction trace variance — sample mode',
+        ylabel=r'$\sum_{s,a}\mathrm{Var}_\tau(\hat u_\tau[s,a])$  where  $\hat u_\tau = \hat g_\tau/\|\hat g_\tau\|$',
+        footer='Per-trajectory ĝ_τ normalized before computing variance across trajectories.',
     )
     fig_trace.savefig(os.path.join(out_dir, 'pg_var_trace.png'), dpi=120)
     plt.close(fig_trace)
@@ -1551,10 +1555,10 @@ def plot_pg_variance(
         field='var_g_visited',
         mode=mode,
         cell_info=cell_info,
-        title_prefix='PG update-direction visitation-weighted variance — sample mode',
-        ylabel=(r'$\mathbb{E}_\tau\left[\sum_t '
-                r'\mathrm{Var}_{\tau\prime}(\hat g_{\tau\prime}[s_t,a_t])\right]$'),
-        footer='Variance weighted by per-trajectory visitation (multiset).',
+        title_prefix='PG normalized-direction visitation-weighted variance — sample mode',
+        ylabel=(r'$\mathbb{E}_\tau\!\left[\sum_t '
+                r'\mathrm{Var}_{\tau\prime}(\hat u_{\tau\prime}[s_t,a_t])\right]$'),
+        footer='Per-trajectory ĝ_τ normalized; variance weighted by per-trajectory visitation.',
     )
     fig_visited.savefig(os.path.join(out_dir, 'pg_var_visited.png'), dpi=120)
     plt.close(fig_visited)
@@ -1567,23 +1571,24 @@ def plot_u_cosine(
     cell_info: dict,
     centering: str,  # 'npg' or 'pinv'
 ) -> None:
-    """Exact-mode cos(U_α, U_{α=0}) figure for a specified centering."""
+    """Exact-mode bias = -cos(U_α, U_{α=0}) figure for a specified centering."""
     import os
     import matplotlib.pyplot as plt
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
 
     if centering == 'npg':
-        field = 'cos_u_npg'
-        title_prefix = 'NPG direction cosine (π-centered) — exact mode'
-        ylabel = r'$\cos(U^{(\mathrm{NPG})}_\alpha,\,U^{(\mathrm{NPG})}_{\alpha=0})$'
+        field = 'u_bias_npg'
+        title_prefix = 'NPG direction bias (π-centered) — exact mode'
+        ylabel = r'$-\cos(U^{(\mathrm{NPG})}_\alpha,\,U^{(\mathrm{NPG})}_{\alpha=0})$'
         footer = (r'$U^{(\mathrm{NPG})}[s,a] = A_{\mathrm{eff}}(s,a) - V_{\mathrm{eff}}(s)$, '
-                  r'$V_{\mathrm{eff}}(s) = \sum_{a\prime}\pi(a\prime|s) A_{\mathrm{eff}}(s,a\prime)$.')
+                  r'$V_{\mathrm{eff}}(s) = \sum_{a\prime}\pi(a\prime|s) A_{\mathrm{eff}}(s,a\prime)$. '
+                  r'Higher = more biased.')
     elif centering == 'pinv':
-        field = 'cos_u_pinv'
-        title_prefix = 'NPG direction cosine (uniform-centered) — exact mode'
-        ylabel = r'$\cos(U^{(\dagger)}_\alpha,\,U^{(\dagger)}_{\alpha=0})$'
+        field = 'u_bias_pinv'
+        title_prefix = 'NPG direction bias (uniform-centered) — exact mode'
+        ylabel = r'$-\cos(U^{(\dagger)}_\alpha,\,U^{(\dagger)}_{\alpha=0})$'
         footer = (r'$U^{(\dagger)}[s,a] = A_{\mathrm{eff}}(s,a) - \frac{1}{A}\sum_{a\prime} A_{\mathrm{eff}}(s,a\prime)$ '
-                  r'(strict Moore-Penrose pseudoinverse of $F$).')
+                  r'(strict Moore-Penrose pseudoinverse of $F$). Higher = more biased.')
     else:
         raise ValueError(f"centering must be 'npg' or 'pinv', got {centering}")
 
@@ -1598,7 +1603,7 @@ def plot_u_cosine(
         footer=footer,
     )
     ax = fig.axes[0]
-    ax.axhline(1.0, color='black', linewidth=1.0, linestyle='--',
+    ax.axhline(-1.0, color='black', linewidth=1.0, linestyle='--',
                label='α=0 (reference)')
     ax.legend(fontsize=8, loc='best')
     fig.savefig(out_path, dpi=120)

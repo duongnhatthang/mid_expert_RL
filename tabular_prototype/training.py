@@ -266,33 +266,25 @@ def update_direction_diagnostics(
     gamma: float,
     start_idx: int,
 ) -> dict:
-    """Sample-mode PG-direction diagnostics computed from the per-step
-    trajectory batch.
+    """Sample-mode PG-direction diagnostics with per-trajectory normalization.
 
-    For each trajectory τ in the batch, build
-        ĝ_τ[s, a] = Σ_t A_t · ψ_t[s, a]
-    where A_t = (1-α)·G_t + α·A^μ(s_t, a_t), G_t is the Monte Carlo return
-    from t to end of τ, and ψ_t[s, a] = 𝟙(s=s_t) · (𝟙(a=a_t) - π(a|s_t)).
-
-    Batch mean: ĝ_α = (1/n) Σ_τ ĝ_τ. Same construction with α=0 gives ĝ_van.
+    For each τ build ĝ_τ,α = Σ_t A_t ψ_t and ĝ_τ,0 = Σ_t G_t ψ_t, then
+    normalize each by its Frobenius norm (NaN-skipping zero-norm trajectories).
 
     Returns:
-        cos_pg_dir: cos(ĝ_α, ĝ_van) on flattened batch-mean vectors. NaN if
-            either has zero norm.
-        var_g_trace: Σ_{s,a} Var_τ(ĝ_τ[s,a]) - total per-trajectory variance.
-        var_g_visited: (1/n) Σ_τ Σ_t Var_τ'(ĝ_τ'[s_t, a_t])
-                     = Σ_{s,a} Var_τ(ĝ_τ[s,a]) · n̂[s,a]
-            where n̂[s,a] is the average visit count per trajectory at (s,a)
-            (multiset weighting).
+        pg_bias: -cos(ū_α, ū_0) where ū_x = mean_τ(ĝ_τ,x / ‖ĝ_τ,x‖).
+            Higher → more biased away from the vanilla-NPG (α=0) direction.
+        var_g_trace: Σ_{s,a} Var_τ(û_τ,α[s,a]).
+        var_g_visited: (1/n) Σ_τ Σ_t Var_τ'(û_τ',α[s_t, a_t]).
 
-    `start_idx` is accepted for API parity with prior versions but not used.
+    `start_idx` is accepted for API parity but unused.
     """
     del start_idx  # signature parity only
     n_states, n_actions = policy.theta.shape
     n_traj = len(trajectories)
     has_teacher = Q_mu is not None and V_mu is not None
 
-    # Per-trajectory ĝ arrays.
+    # Per-trajectory ĝ arrays (raw, pre-normalization).
     g_alpha = np.zeros((n_traj, n_states, n_actions))
     g_van = np.zeros((n_traj, n_states, n_actions))
     # Per-trajectory visit counts (multiset).
@@ -323,33 +315,62 @@ def update_direction_diagnostics(
 
             visits[tau_idx, s, a] += 1.0
 
-    # Batch means.
-    g_alpha_mean = g_alpha.mean(axis=0) if n_traj > 0 else np.zeros((n_states, n_actions))
-    g_van_mean = g_van.mean(axis=0) if n_traj > 0 else np.zeros((n_states, n_actions))
+    # Normalize per trajectory; NaN-skip zero-norm trajectories.
+    norms_alpha = np.linalg.norm(g_alpha.reshape(n_traj, -1), axis=1) if n_traj > 0 else np.zeros(0)
+    norms_van = np.linalg.norm(g_van.reshape(n_traj, -1), axis=1) if n_traj > 0 else np.zeros(0)
 
-    # Cosine.
-    a_flat = g_alpha_mean.reshape(-1)
-    v_flat = g_van_mean.reshape(-1)
+    def _normalize(g_arr, norms):
+        out = np.full_like(g_arr, np.nan)
+        nonzero = norms > 0
+        out[nonzero] = g_arr[nonzero] / norms[nonzero, None, None]
+        return out
+
+    u_alpha = _normalize(g_alpha, norms_alpha)
+    u_van = _normalize(g_van, norms_van)
+
+    # Means across non-NaN trajectories.
+    import warnings
+    if n_traj > 0:
+        with np.errstate(all='ignore'), warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            u_bar_alpha = np.nanmean(u_alpha, axis=0)
+            u_bar_van = np.nanmean(u_van, axis=0)
+    else:
+        u_bar_alpha = np.zeros((n_states, n_actions))
+        u_bar_van = np.zeros((n_states, n_actions))
+
+    # Cosine (properly normalized on the outside).
+    a_flat = u_bar_alpha.reshape(-1)
+    v_flat = u_bar_van.reshape(-1)
     a_norm = float(np.linalg.norm(a_flat))
     v_norm = float(np.linalg.norm(v_flat))
-    if a_norm > 0.0 and v_norm > 0.0:
-        cos_pg_dir = float(a_flat @ v_flat / (a_norm * v_norm))
+    if (
+        a_norm > 0.0
+        and v_norm > 0.0
+        and np.isfinite(a_norm)
+        and np.isfinite(v_norm)
+    ):
+        cos_val = float(a_flat @ v_flat / (a_norm * v_norm))
     else:
-        cos_pg_dir = float('nan')
+        cos_val = float('nan')
+    pg_bias = -cos_val if not np.isnan(cos_val) else float('nan')
 
-    # Per-cell variance across τ.
+    # Normalized per-cell variance (uses nanvar to ignore zero-norm τ's).
     if n_traj > 0:
-        g_var = g_alpha.var(axis=0)
+        with np.errstate(all='ignore'), warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            u_var = np.nanvar(u_alpha, axis=0)
+        u_var = np.nan_to_num(u_var, nan=0.0)
         mean_visits = visits.mean(axis=0)
     else:
-        g_var = np.zeros((n_states, n_actions))
+        u_var = np.zeros((n_states, n_actions))
         mean_visits = np.zeros((n_states, n_actions))
 
-    var_g_trace = float(g_var.sum())
-    var_g_visited = float((g_var * mean_visits).sum())
+    var_g_trace = float(u_var.sum())
+    var_g_visited = float((u_var * mean_visits).sum())
 
     return {
-        'cos_pg_dir': cos_pg_dir,
+        'pg_bias': pg_bias,
         'var_g_trace': var_g_trace,
         'var_g_visited': var_g_visited,
     }
@@ -404,9 +425,14 @@ def exact_direction_diagnostics(
             return float(xf @ yf / (xn * yn))
         return float('nan')
 
+    cos_npg = _cos(U_npg_alpha, U_npg_van)
+    cos_pinv = _cos(U_pinv_alpha, U_pinv_van)
+    u_bias_npg = -cos_npg if not np.isnan(cos_npg) else float('nan')
+    u_bias_pinv = -cos_pinv if not np.isnan(cos_pinv) else float('nan')
+
     return {
-        'cos_u_npg': _cos(U_npg_alpha, U_npg_van),
-        'cos_u_pinv': _cos(U_pinv_alpha, U_pinv_van),
+        'u_bias_npg': u_bias_npg,
+        'u_bias_pinv': u_bias_pinv,
     }
 
 

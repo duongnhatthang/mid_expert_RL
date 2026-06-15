@@ -11,7 +11,7 @@ import numpy as np
 def _fake_pg_history(n_eval_ticks=10, cos_value=0.7):
     return [{
         'steps': 10 * i,
-        'cos_pg_dir': cos_value + 0.01 * i,
+        'pg_bias': cos_value + 0.01 * i,
         'var_g_trace': 0.5 + 0.01 * i,
         'var_g_visited': 0.3 + 0.01 * i,
     } for i in range(n_eval_ticks)]
@@ -20,8 +20,8 @@ def _fake_pg_history(n_eval_ticks=10, cos_value=0.7):
 def _fake_u_history(n_eval_ticks=10, npg_value=0.5, pinv_value=0.6):
     return [{
         'steps': 10 * i,
-        'cos_u_npg': npg_value + 0.01 * i,
-        'cos_u_pinv': pinv_value + 0.01 * i,
+        'u_bias_npg': npg_value + 0.01 * i,
+        'u_bias_pinv': pinv_value + 0.01 * i,
     } for i in range(n_eval_ticks)]
 
 

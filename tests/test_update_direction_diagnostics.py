@@ -31,9 +31,9 @@ def test_pg_returns_expected_keys():
     _, policy, trajs, Q_mu, V_mu, gamma, start_idx = _make_setup()
     out = update_direction_diagnostics(
         policy, trajs, Q_mu, V_mu, alpha=1.0, gamma=gamma, start_idx=start_idx)
-    assert set(out.keys()) == {'cos_pg_dir', 'var_g_trace', 'var_g_visited'}
+    assert set(out.keys()) == {'pg_bias', 'var_g_trace', 'var_g_visited'}
     for k, v in out.items():
-        if k == 'cos_pg_dir':
+        if k == 'pg_bias':
             assert np.isnan(v) or (-1.0 - 1e-9 <= v <= 1.0 + 1e-9)
         else:
             assert np.isfinite(v) and v >= 0.0
@@ -43,21 +43,21 @@ def test_pg_cos_is_one_at_alpha_zero():
     _, policy, trajs, Q_mu, V_mu, gamma, start_idx = _make_setup(seed=1)
     out = update_direction_diagnostics(
         policy, trajs, Q_mu, V_mu, alpha=0.0, gamma=gamma, start_idx=start_idx)
-    assert out['cos_pg_dir'] == pytest.approx(1.0, abs=1e-9)
+    assert out['pg_bias'] == pytest.approx(-1.0, abs=1e-9)
 
 
 def test_pg_cos_is_one_when_teacher_is_none():
     _, policy, trajs, _, _, gamma, start_idx = _make_setup(seed=2)
     out = update_direction_diagnostics(
         policy, trajs, None, None, alpha=0.5, gamma=gamma, start_idx=start_idx)
-    assert out['cos_pg_dir'] == pytest.approx(1.0, abs=1e-9)
+    assert out['pg_bias'] == pytest.approx(-1.0, abs=1e-9)
 
 
 def test_pg_cos_is_nan_when_direction_is_zero():
     _, policy, trajs, _, _, gamma, start_idx = _make_setup(seed=2)
     out = update_direction_diagnostics(
         policy, trajs, None, None, alpha=1.0, gamma=gamma, start_idx=start_idx)
-    assert np.isnan(out['cos_pg_dir'])
+    assert np.isnan(out['pg_bias'])
 
 
 def test_pg_variance_nonneg_and_visited_le_trace_times_horizon():
@@ -76,7 +76,7 @@ def test_exact_returns_expected_keys():
     env, policy, _, Q_mu, V_mu, gamma, _ = _make_setup(seed=4)
     Q_pi, _ = compute_student_qvalues(env, policy, gamma)
     out = exact_direction_diagnostics(policy, Q_pi, Q_mu, V_mu, alpha=1.0)
-    assert set(out.keys()) == {'cos_u_npg', 'cos_u_pinv'}
+    assert set(out.keys()) == {'u_bias_npg', 'u_bias_pinv'}
     for v in out.values():
         assert np.isnan(v) or (-1.0 - 1e-9 <= v <= 1.0 + 1e-9)
 
@@ -85,8 +85,8 @@ def test_exact_cos_is_one_at_alpha_zero():
     env, policy, _, Q_mu, V_mu, gamma, _ = _make_setup(seed=5)
     Q_pi, _ = compute_student_qvalues(env, policy, gamma)
     out = exact_direction_diagnostics(policy, Q_pi, Q_mu, V_mu, alpha=0.0)
-    assert out['cos_u_npg'] == pytest.approx(1.0, abs=1e-9)
-    assert out['cos_u_pinv'] == pytest.approx(1.0, abs=1e-9)
+    assert out['u_bias_npg'] == pytest.approx(-1.0, abs=1e-9)
+    assert out['u_bias_pinv'] == pytest.approx(-1.0, abs=1e-9)
 
 
 def test_exact_per_state_action_sums_for_pinv():
