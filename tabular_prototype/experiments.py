@@ -18,6 +18,8 @@ from .training import (
     compute_state_action_visitation,
     visitation_metrics,
     _safe_kurtosis,
+    update_direction_diagnostics,
+    exact_direction_diagnostics,
 )
 from .visualization import visualize_state_visitation, visualize_visitation_comparison_grid
 
@@ -53,6 +55,7 @@ def run_experiment(
     eval_interval: int = 10,
     eval_n_episodes: int = 20,
     mode: str = "exact",
+    pg_diag_enabled: bool = False,
 ) -> Dict:
     """Run a single experiment and return results dict.
 
@@ -123,6 +126,19 @@ def run_experiment(
             delta_v_qpi = float(V_pi_after[start_idx]) - V_before
             policy.theta = theta_saved  # restore
 
+            # Exact-mode NPG-direction diagnostic at θ_t (BEFORE the update),
+            # gated to eval ticks. Uses the just-computed Q^π.
+            is_last_step = (step == sample_budget - 1)
+            will_eval_tick_exact = (
+                (step + 1) % eval_interval == 0 or is_last_step
+            )
+            if pg_diag_enabled and will_eval_tick_exact:
+                exact_diag = exact_direction_diagnostics(
+                    policy, Q_pi, Q_mu, V_mu, alpha,
+                )
+            else:
+                exact_diag = None
+
             # Real update
             step_diag = exact_npg_update(policy, Q_pi, Q_mu, V_mu, alpha, lr)
 
@@ -140,7 +156,6 @@ def run_experiment(
 
             update_count += 1
 
-            is_last_step = (step == sample_budget - 1)
             if update_count % eval_interval == 0 or is_last_step:
                 eval_results = evaluate_policy(
                     env, policy, n_episodes=eval_n_episodes, rng=rng
@@ -148,7 +163,7 @@ def run_experiment(
                 _, V_pi_undiscounted = compute_student_qvalues(
                     env, policy, gamma_undiscounted
                 )
-                history.append({
+                hist_entry = {
                     'steps': update_count,
                     'mean_reward': eval_results['mean_reward'],
                     'goal_rate': eval_results['goal_rate'],
@@ -163,7 +178,10 @@ def run_experiment(
                     ),
                     'mc_var_undiscounted': eval_results['std_reward'] ** 2,
                     'mc_var_discounted': eval_results['std_reward_discounted'] ** 2,
-                })
+                }
+                if exact_diag is not None:
+                    hist_entry.update(exact_diag)
+                history.append(hist_entry)
     else:
         # Trajectory-based modes: budget = number of observations
         # "hybrid" uses exact Q^π at rollout (s,a); "sample" uses MC returns.
@@ -205,6 +223,20 @@ def run_experiment(
                 policy, trajectories, Q_mu, V_mu, alpha, gamma,
                 Q_pi=q_pi_for_grad,
             )
+
+            predicted_update_count = update_count + 1
+            will_eval_tick = (
+                predicted_update_count % eval_interval == 0
+                or total_steps >= sample_budget
+            )
+            if mode == "sample" and will_eval_tick and pg_diag_enabled:
+                npg_diag = update_direction_diagnostics(
+                    policy, trajectories, Q_mu, V_mu, alpha, gamma,
+                    start_idx=start_idx,
+                    Q_pi=Q_pi, V_pi=V_pi,
+                )
+            else:
+                npg_diag = None
 
             # Save theta for delta-V decomposition
             theta_saved = policy.theta.copy()
@@ -267,7 +299,7 @@ def run_experiment(
                 _, V_pi_undiscounted = compute_student_qvalues(
                     env, policy, gamma_undiscounted
                 )
-                history.append({
+                hist_entry = {
                     'steps': total_steps,
                     'mean_reward': eval_results['mean_reward'],
                     'goal_rate': eval_results['goal_rate'],
@@ -282,7 +314,10 @@ def run_experiment(
                     ),
                     'mc_var_undiscounted': eval_results['std_reward'] ** 2,
                     'mc_var_discounted': eval_results['std_reward_discounted'] ** 2,
-                })
+                }
+                if npg_diag is not None:
+                    hist_entry.update(npg_diag)
+                history.append(hist_entry)
 
     # In exact mode, collect visitation from the final policy via evaluation trajectories
     if mode == "exact" and cumulative_visitation.sum() == 0:
@@ -647,6 +682,7 @@ def run_learning_curve_experiment(
     saturation_window: int = 10,
     saturation_eps: float = 0.005,
     saturation_checks: int = 3,
+    pg_diag_enabled: bool = False,
 ) -> Dict[int, list]:
     """
     Run learning curve experiments with optional saturation-based stopping.
@@ -668,7 +704,7 @@ def run_learning_curve_experiment(
             horizon=horizon, sample_budget=max_budget, alpha=0.0, lr=lr,
             trajectories_per_update=trajectories_per_update, seed=0,
             eval_interval=eval_interval, eval_n_episodes=eval_n_episodes,
-            mode=mode,
+            mode=mode, pg_diag_enabled=pg_diag_enabled,
         )
         effective_budget = _detect_saturation(
             sat_result['history'], max_budget,
@@ -691,7 +727,7 @@ def run_learning_curve_experiment(
                 trajectories_per_update=trajectories_per_update,
                 seed=seed, eval_interval=eval_interval,
                 eval_n_episodes=eval_n_episodes,
-                mode=mode,
+                mode=mode, pg_diag_enabled=pg_diag_enabled,
             )
             histories[cap].append(result['history'])
         rewards = [h[-1]['mean_reward'] for h in histories[cap] if h]
@@ -960,6 +996,7 @@ def run_learning_curve_experiment_zeta(
     saturation_window: int = 10,
     saturation_eps: float = 0.005,
     saturation_checks: int = 3,
+    pg_diag_enabled: bool = False,
 ) -> Dict[float, list]:
     """
     Learning curve experiment using the continuous zeta parameterisation.
@@ -984,7 +1021,7 @@ def run_learning_curve_experiment_zeta(
             horizon=horizon, sample_budget=max_budget, alpha=0.0, lr=lr,
             trajectories_per_update=trajectories_per_update, seed=0,
             eval_interval=eval_interval, eval_n_episodes=eval_n_episodes,
-            mode=mode,
+            mode=mode, pg_diag_enabled=pg_diag_enabled,
         )
         effective_budget = _detect_saturation(
             sat_result['history'], max_budget,
@@ -1012,7 +1049,7 @@ def run_learning_curve_experiment_zeta(
                 seed=seed,
                 eval_interval=eval_interval,
                 eval_n_episodes=eval_n_episodes,
-                mode=mode,
+                mode=mode, pg_diag_enabled=pg_diag_enabled,
             )
             histories[zeta].append(result['history'])
         rewards = [h[-1]['mean_reward'] for h in histories[zeta] if h]

@@ -1,5 +1,6 @@
 """Visualization functions for policies, Q-values, advantages, and experiment results."""
 
+import warnings
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
@@ -1399,4 +1400,232 @@ def plot_entropy_trajectory(
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _generic_metric_figure(
+    histories_by_teacher,
+    baseline_history_alpha_zero,
+    field: str,
+    mode: str,
+    cell_info: dict,
+    title_prefix: str,
+    ylabel: str,
+    footer: str,
+):
+    """Generic single-panel figure builder for {teacher → list of histories}
+    with optional α=0 baseline overlay. Returns the matplotlib figure.
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+
+    sorted_teachers = sorted(
+        histories_by_teacher.keys(),
+        key=lambda k: (k is None, k),
+    )
+    for tv in sorted_teachers:
+        histories = histories_by_teacher[tv]
+        if not histories:
+            continue
+        min_len = min(len(h) for h in histories)
+        if min_len == 0:
+            continue
+        steps = np.mean([
+            [h['steps'] for h in seed_hist[:min_len]]
+            for seed_hist in histories
+        ], axis=0)
+        values = np.stack([
+            [h[field] for h in seed_hist[:min_len]]
+            for seed_hist in histories
+        ], axis=0)
+        with np.errstate(all='ignore'), warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            mean = np.nanmean(values, axis=0)
+            std = np.nanstd(values, axis=0)
+            n_valid = np.sum(~np.isnan(values), axis=0)
+            sem = np.where(n_valid > 0, std / np.sqrt(np.maximum(n_valid, 1)), np.nan)
+        label = (f'cap={tv}' if mode == 'capability'
+                 else f'ζ={tv}')
+        ax.plot(steps, mean, label=label, marker='o',
+                markersize=3, linewidth=1.5)
+        ax.fill_between(steps, mean - sem, mean + sem, alpha=0.2)
+
+    if baseline_history_alpha_zero:
+        bh = baseline_history_alpha_zero
+        min_len = min(len(h) for h in bh)
+        if min_len > 0:
+            steps_b = np.mean([
+                [h['steps'] for h in seed_hist[:min_len]]
+                for seed_hist in bh
+            ], axis=0)
+            vals_b = np.stack([
+                [h[field] for h in seed_hist[:min_len]]
+                for seed_hist in bh
+            ], axis=0)
+            with np.errstate(all='ignore'), warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                mean_b = np.nanmean(vals_b, axis=0)
+                std_b = np.nanstd(vals_b, axis=0)
+                n_b = np.sum(~np.isnan(vals_b), axis=0)
+                sem_b = np.where(n_b > 0, std_b / np.sqrt(np.maximum(n_b, 1)), np.nan)
+            ax.plot(steps_b, mean_b, color='black', linestyle='--',
+                    linewidth=1.5, label='α=0 (vanilla NPG)')
+            ax.fill_between(steps_b, mean_b - sem_b, mean_b + sem_b,
+                            color='black', alpha=0.1)
+
+    ax.set_xlabel('env step', fontsize=9)
+    ax.set_ylabel(ylabel, fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, loc='best')
+
+    h_val = cell_info['horizon']
+    h_type = cell_info['horizon_type']
+    fig.suptitle(
+        f'{title_prefix} ({mode} sweep)\n'
+        f"dist={cell_info['distance']}, H={h_val} ({h_type}), "
+        f"B={cell_info['sample_budget']}, "
+        rf"$\alpha={cell_info['alpha']}$",
+        fontsize=10,
+    )
+    fig.text(0.5, 0.01, footer, ha='center', fontsize=8)
+    fig.tight_layout(rect=[0, 0.04, 1, 0.92])
+    return fig
+
+
+def plot_pg_cosine(
+    histories_by_teacher,
+    mode: str,
+    out_path: str,
+    cell_info: dict,
+) -> None:
+    """Sample-mode bias (-cos(ū_α, A^π)) figure. Single panel.
+
+    ū_α = mean_τ(ĝ_τ,α / ‖ĝ_τ,α‖) is the average normalized per-trajectory
+    PG direction. A^π = Q^π - V^π is the exact π-centered advantage of the
+    student (same reference as exact mode), providing a dense, deterministic
+    baseline rather than the sparse trajectory-based ĝ_τ,0.
+    """
+    import os
+    import matplotlib.pyplot as plt
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    fig = _generic_metric_figure(
+        histories_by_teacher,
+        baseline_history_alpha_zero=None,
+        field='pg_bias',
+        mode=mode,
+        cell_info=cell_info,
+        title_prefix='PG update-direction bias — sample mode',
+        ylabel=r'$-\cos(\bar u_\alpha,\,A^\pi)$  where  $\bar u_\alpha = \mathbb{E}_\tau\!\left[\hat g_{\tau,\alpha}/\|\hat g_{\tau,\alpha}\|\right]$',
+        footer=(r'Reference $A^\pi = Q^\pi - V^\pi$ from exact Bellman policy '
+                r'evaluation. Lower (closer to $-1$) = better aligned with ideal PG.'),
+    )
+    # Reference line at y=-1: perfect alignment with A^π.
+    ax = fig.axes[0]
+    ax.axhline(-1.0, color='black', linewidth=1.0, linestyle='--',
+               label=r'$A^\pi$ (reference)')
+    ax.legend(fontsize=8, loc='best')
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
+def plot_pg_variance(
+    histories_by_teacher,
+    baseline_history_alpha_zero,
+    mode: str,
+    out_dir: str,
+    cell_info: dict,
+) -> None:
+    """Sample-mode normalized variance figures. Writes pg_var_trace.png
+    and pg_var_visited.png."""
+    import os
+    import matplotlib.pyplot as plt
+    os.makedirs(out_dir, exist_ok=True)
+
+    fig_trace = _generic_metric_figure(
+        histories_by_teacher,
+        baseline_history_alpha_zero,
+        field='var_g_trace',
+        mode=mode,
+        cell_info=cell_info,
+        title_prefix='PG normalized-direction trace variance — sample mode',
+        ylabel=r'$\sum_{s,a}\mathrm{Var}_\tau(\hat u_\tau[s,a])$  where  $\hat u_\tau = \hat g_\tau/\|\hat g_\tau\|$',
+        footer='Per-trajectory ĝ_τ normalized before computing variance across trajectories.',
+    )
+    fig_trace.savefig(os.path.join(out_dir, 'pg_var_trace.png'), dpi=120)
+    plt.close(fig_trace)
+
+    fig_visited = _generic_metric_figure(
+        histories_by_teacher,
+        baseline_history_alpha_zero,
+        field='var_g_visited',
+        mode=mode,
+        cell_info=cell_info,
+        title_prefix='PG normalized-direction visitation-weighted variance — sample mode',
+        ylabel=(r'$\mathbb{E}_\tau\!\left[\sum_t '
+                r'\mathrm{Var}_{\tau\prime}(\hat u_{\tau\prime}[s_t,a_t])\right]$'),
+        footer='Per-trajectory ĝ_τ normalized; variance weighted by per-trajectory visitation.',
+    )
+    fig_visited.savefig(os.path.join(out_dir, 'pg_var_visited.png'), dpi=120)
+    plt.close(fig_visited)
+
+    fig_inner = _generic_metric_figure(
+        histories_by_teacher,
+        baseline_history_alpha_zero,
+        field='var_inner_g_ref',
+        mode=mode,
+        cell_info=cell_info,
+        title_prefix='Per-rollout normalized inner-product variance — sample mode',
+        ylabel=(r'$\mathrm{Var}_\tau\!\left[\langle \hat g_{\tau,\alpha}/\|\hat g_{\tau,\alpha}\|,\,'
+                r'A^\pi/\|A^\pi\|\rangle_F\right]$'),
+        footer=(r'Variance across rollouts of the per-rollout cosine alignment '
+                r'with the reference. Both sides unit-normalized — pure rotational variability.'),
+    )
+    fig_inner.savefig(os.path.join(out_dir, 'pg_var_inner.png'), dpi=120)
+    plt.close(fig_inner)
+
+
+def plot_u_cosine(
+    histories_by_teacher,
+    mode: str,
+    out_path: str,
+    cell_info: dict,
+    centering: str,  # 'npg' or 'pinv'
+) -> None:
+    """Exact-mode bias = -cos(U_α, U_{α=0}) figure for a specified centering."""
+    import os
+    import matplotlib.pyplot as plt
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+
+    if centering == 'npg':
+        field = 'u_bias_npg'
+        title_prefix = 'NPG direction bias (π-centered) — exact mode'
+        ylabel = r'$-\cos(U^{(\mathrm{NPG})}_\alpha,\,U^{(\mathrm{NPG})}_{\alpha=0})$'
+        footer = (r'$U^{(\mathrm{NPG})}[s,a] = A_{\mathrm{eff}}(s,a) - V_{\mathrm{eff}}(s)$, '
+                  r'$V_{\mathrm{eff}}(s) = \sum_{a\prime}\pi(a\prime|s) A_{\mathrm{eff}}(s,a\prime)$. '
+                  r'Higher = more biased.')
+    elif centering == 'pinv':
+        field = 'u_bias_pinv'
+        title_prefix = 'NPG direction bias (uniform-centered) — exact mode'
+        ylabel = r'$-\cos(U^{(\dagger)}_\alpha,\,U^{(\dagger)}_{\alpha=0})$'
+        footer = (r'$U^{(\dagger)}[s,a] = A_{\mathrm{eff}}(s,a) - \frac{1}{A}\sum_{a\prime} A_{\mathrm{eff}}(s,a\prime)$ '
+                  r'(strict Moore-Penrose pseudoinverse of $F$). Higher = more biased.')
+    else:
+        raise ValueError(f"centering must be 'npg' or 'pinv', got {centering}")
+
+    fig = _generic_metric_figure(
+        histories_by_teacher,
+        baseline_history_alpha_zero=None,
+        field=field,
+        mode=mode,
+        cell_info=cell_info,
+        title_prefix=title_prefix,
+        ylabel=ylabel,
+        footer=footer,
+    )
+    ax = fig.axes[0]
+    ax.axhline(-1.0, color='black', linewidth=1.0, linestyle='--',
+               label='α=0 (reference)')
+    ax.legend(fontsize=8, loc='best')
+    fig.savefig(out_path, dpi=120)
     plt.close(fig)

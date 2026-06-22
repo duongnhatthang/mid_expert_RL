@@ -695,12 +695,12 @@ def _overlay_baseline_alpha(
         for seed_hist in histories
     ], axis=0)
     mean = values.mean(axis=0)
-    std = values.std(axis=0)
+    sem = values.std(axis=0) / np.sqrt(max(values.shape[0], 1))
     ax.plot(steps, mean,
             label=rf'$\alpha={baseline_alpha}$ (vanilla NPG)',
             color='black', linestyle='--', linewidth=1.5,
             marker='s', markersize=3)
-    ax.fill_between(steps, mean - std, mean + std,
+    ax.fill_between(steps, mean - sem, mean + sem,
                     alpha=0.15, color='black')
 
 
@@ -1639,10 +1639,10 @@ def plot_advantage_alignment(
             for seed_hist in histories
         ], axis=0)
         mean = values.mean(axis=0)
-        std = values.std(axis=0)
+        sem = values.std(axis=0) / np.sqrt(max(values.shape[0], 1))
         ax.plot(steps, mean, label=_teacher_label(mode, tv),
                 marker='o', markersize=3, linewidth=1.5)
-        ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+        ax.fill_between(steps, mean - sem, mean + sem, alpha=0.2)
 
     _overlay_baseline_alpha(
         ax, all_results, mode, tcol, 'adv_product_s0', target, baseline_alpha,
@@ -1785,10 +1785,10 @@ def plot_mc_variance_curve(
                 for seed_hist in histories
             ], axis=0)
             mean = values.mean(axis=0)
-            std = values.std(axis=0)
+            sem = values.std(axis=0) / np.sqrt(max(values.shape[0], 1))
             ax.plot(steps, mean, label=_teacher_label(mode, tv),
                     marker='o', markersize=3, linewidth=1.5)
-            ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+            ax.fill_between(steps, mean - sem, mean + sem, alpha=0.2)
 
         _overlay_baseline_alpha(
             ax, all_results, mode, tcol, field_name, target, baseline_alpha,
@@ -1969,11 +1969,11 @@ def plot_learning_curves(all_results: list, mode: str, figures_dir: str):
                         for seed_hist in histories
                     ], axis=0)
                     mean = values.mean(axis=0)
-                    std = values.std(axis=0)
+                    sem = values.std(axis=0) / np.sqrt(max(values.shape[0], 1))
                     label = _teacher_label(mode, tv)
                     ax.plot(steps, mean, label=label, linewidth=1.5,
                             marker='o', markersize=3)
-                    ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+                    ax.fill_between(steps, mean - sem, mean + sem, alpha=0.2)
 
                 h_val = horizon_by_h_type.get(h_type)
                 h_label = (f'H={h_val} ({h_type})' if h_val is not None
