@@ -1443,11 +1443,13 @@ def _generic_metric_figure(
             warnings.simplefilter('ignore', RuntimeWarning)
             mean = np.nanmean(values, axis=0)
             std = np.nanstd(values, axis=0)
+            n_valid = np.sum(~np.isnan(values), axis=0)
+            sem = np.where(n_valid > 0, std / np.sqrt(np.maximum(n_valid, 1)), np.nan)
         label = (f'cap={tv}' if mode == 'capability'
                  else f'ζ={tv}')
         ax.plot(steps, mean, label=label, marker='o',
                 markersize=3, linewidth=1.5)
-        ax.fill_between(steps, mean - std, mean + std, alpha=0.2)
+        ax.fill_between(steps, mean - sem, mean + sem, alpha=0.2)
 
     if baseline_history_alpha_zero:
         bh = baseline_history_alpha_zero
@@ -1465,9 +1467,11 @@ def _generic_metric_figure(
                 warnings.simplefilter('ignore', RuntimeWarning)
                 mean_b = np.nanmean(vals_b, axis=0)
                 std_b = np.nanstd(vals_b, axis=0)
+                n_b = np.sum(~np.isnan(vals_b), axis=0)
+                sem_b = np.where(n_b > 0, std_b / np.sqrt(np.maximum(n_b, 1)), np.nan)
             ax.plot(steps_b, mean_b, color='black', linestyle='--',
                     linewidth=1.5, label='α=0 (vanilla NPG)')
-            ax.fill_between(steps_b, mean_b - std_b, mean_b + std_b,
+            ax.fill_between(steps_b, mean_b - sem_b, mean_b + sem_b,
                             color='black', alpha=0.1)
 
     ax.set_xlabel('env step', fontsize=9)
@@ -1495,10 +1499,12 @@ def plot_pg_cosine(
     out_path: str,
     cell_info: dict,
 ) -> None:
-    """Sample-mode bias (-cos(ū_α, ū_{α=0})) figure. Single panel.
+    """Sample-mode bias (-cos(ū_α, A^π)) figure. Single panel.
 
-    ū_x = mean_τ(ĝ_τ,x / ‖ĝ_τ,x‖) is the average normalized
-    per-trajectory PG direction.
+    ū_α = mean_τ(ĝ_τ,α / ‖ĝ_τ,α‖) is the average normalized per-trajectory
+    PG direction. A^π = Q^π - V^π is the exact π-centered advantage of the
+    student (same reference as exact mode), providing a dense, deterministic
+    baseline rather than the sparse trajectory-based ĝ_τ,0.
     """
     import os
     import matplotlib.pyplot as plt
@@ -1510,14 +1516,14 @@ def plot_pg_cosine(
         mode=mode,
         cell_info=cell_info,
         title_prefix='PG update-direction bias — sample mode',
-        ylabel=r'$-\cos(\bar u_\alpha,\,\bar u_{\alpha=0})$  where  $\bar u_x = \mathbb{E}_\tau\!\left[\hat g_{\tau,x}/\|\hat g_{\tau,x}\|\right]$',
-        footer=(r'$\hat g_\tau$ normalized per trajectory before averaging; '
-                r'higher = more biased away from vanilla NPG.'),
+        ylabel=r'$-\cos(\bar u_\alpha,\,A^\pi)$  where  $\bar u_\alpha = \mathbb{E}_\tau\!\left[\hat g_{\tau,\alpha}/\|\hat g_{\tau,\alpha}\|\right]$',
+        footer=(r'Reference $A^\pi = Q^\pi - V^\pi$ from exact Bellman policy '
+                r'evaluation. Lower (closer to $-1$) = better aligned with ideal PG.'),
     )
-    # Reference line at y=-1: α=0 self-bias = -1 (perfect alignment).
+    # Reference line at y=-1: perfect alignment with A^π.
     ax = fig.axes[0]
     ax.axhline(-1.0, color='black', linewidth=1.0, linestyle='--',
-               label='α=0 (reference)')
+               label=r'$A^\pi$ (reference)')
     ax.legend(fontsize=8, loc='best')
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
@@ -1562,6 +1568,21 @@ def plot_pg_variance(
     )
     fig_visited.savefig(os.path.join(out_dir, 'pg_var_visited.png'), dpi=120)
     plt.close(fig_visited)
+
+    fig_inner = _generic_metric_figure(
+        histories_by_teacher,
+        baseline_history_alpha_zero,
+        field='var_inner_g_ref',
+        mode=mode,
+        cell_info=cell_info,
+        title_prefix='Per-rollout normalized inner-product variance — sample mode',
+        ylabel=(r'$\mathrm{Var}_\tau\!\left[\langle \hat g_{\tau,\alpha}/\|\hat g_{\tau,\alpha}\|,\,'
+                r'A^\pi/\|A^\pi\|\rangle_F\right]$'),
+        footer=(r'Variance across rollouts of the per-rollout cosine alignment '
+                r'with the reference. Both sides unit-normalized — pure rotational variability.'),
+    )
+    fig_inner.savefig(os.path.join(out_dir, 'pg_var_inner.png'), dpi=120)
+    plt.close(fig_inner)
 
 
 def plot_u_cosine(

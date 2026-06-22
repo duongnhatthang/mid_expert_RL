@@ -233,6 +233,7 @@ def run_experiment(
                 npg_diag = update_direction_diagnostics(
                     policy, trajectories, Q_mu, V_mu, alpha, gamma,
                     start_idx=start_idx,
+                    Q_pi=Q_pi, V_pi=V_pi,
                 )
             else:
                 npg_diag = None

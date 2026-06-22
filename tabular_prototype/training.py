@@ -265,17 +265,28 @@ def update_direction_diagnostics(
     alpha: float,
     gamma: float,
     start_idx: int,
+    Q_pi: Optional[np.ndarray] = None,
+    V_pi: Optional[np.ndarray] = None,
 ) -> dict:
     """Sample-mode PG-direction diagnostics with per-trajectory normalization.
 
-    For each τ build ĝ_τ,α = Σ_t A_t ψ_t and ĝ_τ,0 = Σ_t G_t ψ_t, then
-    normalize each by its Frobenius norm (NaN-skipping zero-norm trajectories).
+    Per-trajectory ĝ_τ,α = Σ_t A_t ψ_t (A_t = (1-α)G_t + α A^μ), normalized
+    by ‖ĝ_τ,α‖ before averaging into ū_α.
+
+    The α=0 reference is the *exact* π-centered advantage A^π = Q^π - V^π
+    computed over all (s, a) from the student's policy — not a trajectory
+    estimate. This matches the exact-mode reference and avoids the sparse-
+    reward degeneracy where ĝ_τ,0 = 0 for trajectories that never hit a goal.
 
     Returns:
-        pg_bias: -cos(ū_α, ū_0) where ū_x = mean_τ(ĝ_τ,x / ‖ĝ_τ,x‖).
-            Higher → more biased away from the vanilla-NPG (α=0) direction.
+        pg_bias: -cos(ū_α, A^π). Higher → more rotated from the ideal PG
+            direction. -1 = perfect alignment.
         var_g_trace: Σ_{s,a} Var_τ(û_τ,α[s,a]).
         var_g_visited: (1/n) Σ_τ Σ_t Var_τ'(û_τ',α[s_t, a_t]).
+        var_inner_g_ref: Var_τ(⟨ĝ_τ,α/‖ĝ_τ,α‖, A^π/‖A^π‖⟩_F) — variance
+            across rollouts of the *normalized* per-rollout cosine alignment
+            with the α=0 reference. Pure rotational variability, scale removed
+            on both sides. NaN-skip zero-norm rollouts.
 
     `start_idx` is accepted for API parity but unused.
     """
@@ -286,7 +297,6 @@ def update_direction_diagnostics(
 
     # Per-trajectory ĝ arrays (raw, pre-normalization).
     g_alpha = np.zeros((n_traj, n_states, n_actions))
-    g_van = np.zeros((n_traj, n_states, n_actions))
     # Per-trajectory visit counts (multiset).
     visits = np.zeros((n_traj, n_states, n_actions), dtype=float)
 
@@ -303,7 +313,6 @@ def update_direction_diagnostics(
             else:
                 A_mu = 0.0
             A_eff = (1.0 - alpha) * G_t + alpha * A_mu
-            A_van = G_t
 
             pi_s = policy.get_probs(s)
             # ψ at row s: e_a - π(·|s).
@@ -311,13 +320,11 @@ def update_direction_diagnostics(
             psi_row[a] += 1.0
 
             g_alpha[tau_idx, s, :] += A_eff * psi_row
-            g_van[tau_idx, s, :] += A_van * psi_row
 
             visits[tau_idx, s, a] += 1.0
 
     # Normalize per trajectory; NaN-skip zero-norm trajectories.
     norms_alpha = np.linalg.norm(g_alpha.reshape(n_traj, -1), axis=1) if n_traj > 0 else np.zeros(0)
-    norms_van = np.linalg.norm(g_van.reshape(n_traj, -1), axis=1) if n_traj > 0 else np.zeros(0)
 
     def _normalize(g_arr, norms):
         out = np.full_like(g_arr, np.nan)
@@ -326,22 +333,30 @@ def update_direction_diagnostics(
         return out
 
     u_alpha = _normalize(g_alpha, norms_alpha)
-    u_van = _normalize(g_van, norms_van)
 
-    # Means across non-NaN trajectories.
+    # Mean across non-NaN trajectories.
     import warnings
     if n_traj > 0:
         with np.errstate(all='ignore'), warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
             u_bar_alpha = np.nanmean(u_alpha, axis=0)
-            u_bar_van = np.nanmean(u_van, axis=0)
     else:
         u_bar_alpha = np.zeros((n_states, n_actions))
-        u_bar_van = np.zeros((n_states, n_actions))
+
+    # α=0 reference: exact π-centered advantage A^π = Q^π - V^π over all (s,a).
+    if Q_pi is not None:
+        if V_pi is None:
+            pi_all = np.stack([policy.get_probs(s) for s in range(n_states)])
+            V_pi_arr = (pi_all * Q_pi).sum(axis=1)
+        else:
+            V_pi_arr = V_pi
+        u_ref = Q_pi - V_pi_arr[:, None]
+    else:
+        u_ref = np.full((n_states, n_actions), np.nan)
 
     # Cosine (properly normalized on the outside).
     a_flat = u_bar_alpha.reshape(-1)
-    v_flat = u_bar_van.reshape(-1)
+    v_flat = u_ref.reshape(-1)
     a_norm = float(np.linalg.norm(a_flat))
     v_norm = float(np.linalg.norm(v_flat))
     if (
@@ -369,10 +384,23 @@ def update_direction_diagnostics(
     var_g_trace = float(u_var.sum())
     var_g_visited = float((u_var * mean_visits).sum())
 
+    # Variance across rollouts of the normalized inner product
+    # ⟨ĝ_τ,α/‖ĝ_τ,α‖, A^π/‖A^π‖⟩_F (i.e. per-rollout cosine vs. reference).
+    if n_traj > 0 and Q_pi is not None and v_norm > 0 and np.isfinite(v_norm):
+        ref_unit = v_flat / v_norm
+        u_alpha_flat = u_alpha.reshape(n_traj, -1)
+        inner_per_traj = u_alpha_flat @ ref_unit  # NaN for zero-norm τ
+        var_inner_g_ref = float(np.nanvar(inner_per_traj))
+        if not np.isfinite(var_inner_g_ref):
+            var_inner_g_ref = float('nan')
+    else:
+        var_inner_g_ref = float('nan')
+
     return {
         'pg_bias': pg_bias,
         'var_g_trace': var_g_trace,
         'var_g_visited': var_g_visited,
+        'var_inner_g_ref': var_inner_g_ref,
     }
 
 

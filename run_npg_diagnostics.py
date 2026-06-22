@@ -14,7 +14,7 @@ capability}:
 Emits per training mode and sweep mode:
 
   Sample mode (<output_dir>/sample/{mode}/):
-      pg_cosine.png, pg_var_trace.png, pg_var_visited.png
+      pg_cosine.png, pg_var_trace.png, pg_var_visited.png, pg_var_inner.png
 
   Exact mode (<output_dir>/exact/{mode}/):
       u_cosine_npg.png, u_cosine_pinv.png

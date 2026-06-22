@@ -14,6 +14,7 @@ def _fake_pg_history(n_eval_ticks=10, cos_value=0.7):
         'pg_bias': cos_value + 0.01 * i,
         'var_g_trace': 0.5 + 0.01 * i,
         'var_g_visited': 0.3 + 0.01 * i,
+        'var_inner_g_ref': 0.05 + 0.01 * i,
     } for i in range(n_eval_ticks)]
 
 
@@ -41,7 +42,7 @@ def test_plot_pg_cosine_writes_png():
         assert os.path.exists(path) and os.path.getsize(path) > 0
 
 
-def test_plot_pg_variance_writes_two_pngs():
+def test_plot_pg_variance_writes_three_pngs():
     from tabular_prototype.visualization import plot_pg_variance
     histories = {0: [_fake_pg_history()], 1: [_fake_pg_history()]}
     baseline = [_fake_pg_history()]
@@ -57,6 +58,7 @@ def test_plot_pg_variance_writes_two_pngs():
         )
         assert os.path.exists(os.path.join(tmp, 'pg_var_trace.png'))
         assert os.path.exists(os.path.join(tmp, 'pg_var_visited.png'))
+        assert os.path.exists(os.path.join(tmp, 'pg_var_inner.png'))
 
 
 def test_plot_u_cosine_writes_both_centerings():
