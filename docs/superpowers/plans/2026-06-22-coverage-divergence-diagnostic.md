@@ -935,7 +935,7 @@ Expected: PASS.
 Run:
 ```bash
 PYTHONPATH=. python run_npg_diagnostics.py \
-  --n-seeds 1 --training-modes exact --grid-size 5 \
+  --n-seeds 1 --training-modes exact --grid-size 5 --distance 2 \
   --override-budget 6 --override-tpu 0 --track-coverage \
   --output-dir /private/tmp/claude-501/-Users-thangduong-Desktop-mid-expert-RL/f9e698f1-c0ec-46c2-8a74-1efad8ff6696/scratchpad/cov_smoke
 ```

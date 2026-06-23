@@ -178,6 +178,19 @@ Figure titles and filenames are tagged with the reference id (`analytic` /
   tick, for both references, with no inf/nan.
 - Regression: `run_experiment(..., track_coverage=False)` (default) is unchanged.
 
+## Known limitations
+
+- **Analytic-reference `π/μ` ratio saturation.** Because the `analytic` reference
+  is deterministic (one-hot), its off-path occupancy smooths to ~`eps`, so any
+  student exploration drives `max d^π/d^μ` (and `renyi_inf = log` of it) past the
+  `cap`, leaving those two curves pinned at `log(cap)` with little training signal.
+  This is the deterministic-support pathology the `learned` reference was added to
+  avoid — the `learned`-reference panel gives a clean concentrability signal, and
+  for the `analytic` reference the `tv`, `kl_mu_pi`, and `chi2` metrics remain
+  informative. Left as-is by decision (2026-06-22); a future refinement could use a
+  larger per-reference `eps` (uniform pseudocount `1/(n_states·n_actions)`) for the
+  analytic reference to turn its ratio into a regularized concentrability.
+
 ## Non-goals
 
 - No PPO / GAE implementation (the `learned` ref uses the project's native α=0
