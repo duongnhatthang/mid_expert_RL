@@ -22,6 +22,7 @@ from .training import (
     exact_direction_diagnostics,
 )
 from .visualization import visualize_state_visitation, visualize_visitation_comparison_grid
+from . import coverage as coverage_mod
 
 
 def _compute_adv_product_s0(policy, Q_pi, V_pi, Q_mu, V_mu, start_idx):
@@ -56,6 +57,8 @@ def run_experiment(
     eval_n_episodes: int = 20,
     mode: str = "exact",
     pg_diag_enabled: bool = False,
+    track_coverage: bool = False,
+    coverage_ref_budget: int = 2000,
 ) -> Dict:
     """Run a single experiment and return results dict.
 
@@ -95,6 +98,13 @@ def run_experiment(
         effective_zeta = 0.0 if teacher_capacity == 0 else 1.0
         Q_mu, V_mu, gamma = compute_teacher_values_auto(
             env, known_goals, zeta=effective_zeta, gamma=gamma)
+
+    coverage_refs = None
+    coverage_grids = None
+    if track_coverage:
+        coverage_refs = coverage_mod.build_reference_occupancies(
+            env, gamma, ref_budget=coverage_ref_budget, lr=lr
+        )
 
     policy = TabularSoftmaxPolicy(env.n_states, env.n_actions)
 
@@ -181,6 +191,14 @@ def run_experiment(
                 }
                 if exact_diag is not None:
                     hist_entry.update(exact_diag)
+                if track_coverage:
+                    cov_scalars, cov_grids = coverage_mod.compute_coverage_metrics(
+                        env, policy, coverage_refs, gamma,
+                        want_grids=is_last_step,
+                    )
+                    hist_entry.update(cov_scalars)
+                    if is_last_step:
+                        coverage_grids = cov_grids
                 history.append(hist_entry)
     else:
         # Trajectory-based modes: budget = number of observations
@@ -317,6 +335,14 @@ def run_experiment(
                 }
                 if npg_diag is not None:
                     hist_entry.update(npg_diag)
+                if track_coverage:
+                    cov_scalars, cov_grids = coverage_mod.compute_coverage_metrics(
+                        env, policy, coverage_refs, gamma,
+                        want_grids=is_last,
+                    )
+                    hist_entry.update(cov_scalars)
+                    if is_last:
+                        coverage_grids = cov_grids
                 history.append(hist_entry)
 
     # In exact mode, collect visitation from the final policy via evaluation trajectories
@@ -348,6 +374,7 @@ def run_experiment(
         'visitation_counts': cumulative_visitation,
         'history': history,
         'diagnostics': all_diagnostics,
+        'coverage_grids': coverage_grids,
         'budget_mode': mode,
         'mode': mode,
     }
