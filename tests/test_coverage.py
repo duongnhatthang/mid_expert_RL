@@ -3,6 +3,8 @@ import pytest
 
 from tabular_prototype.environment import GridEnv
 from tabular_prototype import coverage
+from tabular_prototype.config import compute_gamma_from_horizon
+from tabular_prototype.student import TabularSoftmaxPolicy
 
 
 def _tiny_env():
@@ -101,3 +103,42 @@ def test_ratio_grids_shape_and_cap():
     assert r_mp.shape == (9, 4) and r_pm.shape == (9, 4)
     assert r_mp.max() <= 50.0 and r_pm.max() <= 50.0
     assert np.isfinite(r_mp).all() and np.isfinite(r_pm).all()
+
+
+def test_build_reference_policy_is_valid_stochastic_and_deterministic():
+    env = _tiny_env()
+    g = compute_gamma_from_horizon(env.horizon)
+    p1 = coverage.build_reference_policy(env, g, ref_budget=200)
+    p2 = coverage.build_reference_policy(env, g, ref_budget=200)
+    assert p1.shape == (env.n_states, env.n_actions)
+    np.testing.assert_allclose(p1.sum(axis=1), 1.0, atol=1e-9)
+    assert (p1 > 0).all()                      # softmax => full support
+    np.testing.assert_allclose(p1, p2, atol=1e-12)  # reproducible
+
+
+def test_build_reference_occupancies_keys_and_sums():
+    env = _tiny_env()
+    g = compute_gamma_from_horizon(env.horizon)
+    refs = coverage.build_reference_occupancies(env, g, ref_budget=200)
+    assert set(refs) == {'analytic', 'learned'}
+    for d in refs.values():
+        np.testing.assert_allclose(d.sum(), 1.0, atol=1e-9)
+
+
+def test_compute_coverage_metrics_flat_keys_and_grids():
+    env = _tiny_env()
+    g = compute_gamma_from_horizon(env.horizon)
+    refs = coverage.build_reference_occupancies(env, g, ref_budget=200)
+    student = TabularSoftmaxPolicy(env.n_states, env.n_actions)  # uniform
+    scalars, grids = coverage.compute_coverage_metrics(
+        env, student, refs, g, want_grids=True
+    )
+    assert 'cov_analytic_max_pi_over_mu' in scalars
+    assert 'cov_learned_chi2_pi_mu' in scalars
+    for v in scalars.values():
+        assert np.isfinite(v)
+    assert set(grids) == {'analytic', 'learned'}
+    assert grids['analytic']['d_pi'].shape == (env.n_states, env.n_actions)
+    # want_grids=False -> empty grids dict.
+    _, grids_off = coverage.compute_coverage_metrics(env, student, refs, g)
+    assert grids_off == {}
