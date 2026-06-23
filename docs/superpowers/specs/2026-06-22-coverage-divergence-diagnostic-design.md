@@ -33,6 +33,12 @@ seed (because the reference depends on the goal layout) and then frozen:
 | `analytic` | `build_optimal_policy(env, env.goals, γ)` — exact argmax-optimal     | deterministic, sparse | the true optimum; Laplace smoothing + cap is load-bearing here |
 | `learned`  | frozen, converged α=0 vanilla-NPG student (no teacher signal)        | softmax, full support | what plain RL converges to without a teacher; smoothing is a safety net |
 
+The `learned` reference is trained with **exact NPG steps** to saturation (early-stop
+when the policy matrix stops changing), capped at a large fixed step budget
+(default 2000). The cap is a step count decoupled from the student's training
+budget, because the student's budget may be measured in observations
+(`sample`/`hybrid` modes) which is not comparable to NPG update steps.
+
 Rationale: the repo has no PPO / GAE / separate baseline-policy implementation —
 it is purely tabular softmax NPG plus a value-iteration teacher. The faithful
 tabular analog of "a traditional RL-trained policy with no teacher signal" is a
