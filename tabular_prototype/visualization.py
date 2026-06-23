@@ -1629,3 +1629,88 @@ def plot_u_cosine(
     ax.legend(fontsize=8, loc='best')
     fig.savefig(out_path, dpi=120)
     plt.close(fig)
+
+
+# Metric -> (ylabel, title fragment) for coverage curves.
+_COVERAGE_METRICS = {
+    'max_pi_over_mu': (r'$\max_{s,a}\, d^\pi/d^\mu$  (concentrability $C$)',
+                       'max ratio dπ/dμ'),
+    'max_mu_over_pi': (r'$\max_{s,a}\, d^\mu/d^\pi$',
+                       'max ratio dμ/dπ'),
+    'chi2_pi_mu': (r'$\chi^2(d^\pi\,\|\,d^\mu)$', 'chi-square'),
+    'kl_pi_mu': (r'$\mathrm{KL}(d^\pi\,\|\,d^\mu)$', 'KL(π‖μ)'),
+    'kl_mu_pi': (r'$\mathrm{KL}(d^\mu\,\|\,d^\pi)$', 'KL(μ‖π)'),
+    'tv': (r'$\mathrm{TV}(d^\pi, d^\mu)$', 'total variation'),
+    'renyi_inf': (r'$\log\max_{s,a} d^\pi/d^\mu$', 'Rényi-∞ (log C)'),
+}
+
+
+def plot_coverage_curves(histories_by_teacher, baseline_history_alpha_zero,
+                         mode, out_dir, cell_info, ref):
+    """One curve figure per coverage metric for reference `ref`.
+
+    Reuses _generic_metric_figure so SEM bands, cell annotation, and the
+    α=0 baseline overlay match the other diagnostics. Returns written paths.
+    """
+    import os
+    import matplotlib.pyplot as plt
+    os.makedirs(out_dir, exist_ok=True)
+    written = []
+    for metric, (ylabel, frag) in _COVERAGE_METRICS.items():
+        field = f'cov_{ref}_{metric}'
+        fig = _generic_metric_figure(
+            histories_by_teacher,
+            baseline_history_alpha_zero,
+            field=field,
+            mode=mode,
+            cell_info=cell_info,
+            title_prefix=f'Coverage {frag} — {ref} reference',
+            ylabel=ylabel,
+            footer=(f'Reference μ = {ref} policy occupancy. '
+                    r'Exact discounted occupancy; Laplace-smoothed, capped.'),
+        )
+        out_path = os.path.join(out_dir, f'cov_{ref}_{metric}.png')
+        fig.savefig(out_path, dpi=120)
+        plt.close(fig)
+        written.append(out_path)
+    return written
+
+
+def plot_coverage_heatmaps(ref, grids, grid_size, out_path, cell_info,
+                           student_label):
+    """4-panel state-marginal heatmaps: d^μ(s), d^π(s), and both ratio grids.
+
+    State marginals (sum over actions) reshaped to grid_size×grid_size; values
+    shown on log10 scale (small floor for zeros).
+    """
+    import os
+    import matplotlib.pyplot as plt
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+
+    def _marginal(arr):
+        return arr.sum(axis=1).reshape(grid_size, grid_size)
+
+    panels = [
+        (r'$d^\mu(s)$', _marginal(grids['d_mu'])),
+        (r'$d^\pi(s)$', _marginal(grids['d_pi'])),
+        (r'$d^\mu/d^\pi$ (state)', _marginal(grids['ratio_mu_over_pi'])),
+        (r'$d^\pi/d^\mu$ (state)', _marginal(grids['ratio_pi_over_mu'])),
+    ]
+    fig, axes = plt.subplots(1, 4, figsize=(15, 4))
+    for ax, (label, data) in zip(axes, panels):
+        im = ax.imshow(np.log10(data + 1e-12), cmap='viridis')
+        ax.set_title(label, fontsize=9)
+        ax.set_xticks([]); ax.set_yticks([])
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    h_val = cell_info['horizon']
+    fig.suptitle(
+        f'Coverage heatmaps — {ref} reference vs {student_label} '
+        f'(log10 scale)\n'
+        f"dist={cell_info['distance']}, H={h_val} "
+        f"({cell_info['horizon_type']}), B={cell_info['sample_budget']}, "
+        rf"$\alpha={cell_info['alpha']}$",
+        fontsize=10,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
