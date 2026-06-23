@@ -62,3 +62,42 @@ def test_occupancy_absorbing_only_chain_closed_form():
     np.testing.assert_allclose(d[0, 0], 1.0 - g, atol=1e-9)
     np.testing.assert_allclose(d[1, 0], g, atol=1e-9)
     np.testing.assert_allclose(d.sum(), 1.0, atol=1e-9)
+
+
+def _rand_dist(shape, seed):
+    rng = np.random.default_rng(seed)
+    x = rng.random(shape)
+    return x / x.sum()
+
+
+def test_divergences_zero_for_identical():
+    d = _rand_dist((9, 4), seed=0)
+    out = coverage.coverage_divergences(d, d)
+    assert out['chi2_pi_mu'] == pytest.approx(0.0, abs=1e-9)
+    assert out['kl_pi_mu'] == pytest.approx(0.0, abs=1e-9)
+    assert out['kl_mu_pi'] == pytest.approx(0.0, abs=1e-9)
+    assert out['tv'] == pytest.approx(0.0, abs=1e-9)
+    assert out['max_pi_over_mu'] == pytest.approx(1.0, abs=1e-6)
+    assert out['max_mu_over_pi'] == pytest.approx(1.0, abs=1e-6)
+    assert out['renyi_inf'] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_divergences_finite_on_disjoint_support():
+    n = (9, 4)
+    d_pi = np.zeros(n); d_pi[0, 0] = 1.0
+    d_mu = np.zeros(n); d_mu[1, 1] = 1.0   # disjoint support pre-smoothing
+    out = coverage.coverage_divergences(d_pi, d_mu, eps=1e-6, cap=1e3)
+    for v in out.values():
+        assert np.isfinite(v)
+    # Capped ratios never exceed cap.
+    assert out['max_pi_over_mu'] <= 1e3 + 1e-6
+    assert out['max_mu_over_pi'] <= 1e3 + 1e-6
+
+
+def test_ratio_grids_shape_and_cap():
+    d_pi = _rand_dist((9, 4), seed=1)
+    d_mu = _rand_dist((9, 4), seed=2)
+    r_mp, r_pm = coverage.coverage_ratio_grids(d_pi, d_mu, cap=50.0)
+    assert r_mp.shape == (9, 4) and r_pm.shape == (9, 4)
+    assert r_mp.max() <= 50.0 and r_pm.max() <= 50.0
+    assert np.isfinite(r_mp).all() and np.isfinite(r_pm).all()

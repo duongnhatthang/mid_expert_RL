@@ -46,3 +46,33 @@ def compute_occupancy(transition, policy_probs, start_dist, gamma,
     A = np.eye(n_states) - gamma * P
     d_state = (1.0 - gamma) * np.linalg.solve(A.T, np.asarray(start_dist, float))
     return d_state[:, None] * policy_probs
+
+
+def _smooth(d, eps):
+    d = np.asarray(d, float) + eps
+    return d / d.sum()
+
+
+def coverage_divergences(d_pi, d_mu, eps=1e-9, cap=1e3) -> dict:
+    """Laplace-smoothed divergences between d_pi and d_mu (both summing to 1)."""
+    dp = _smooth(d_pi, eps)
+    dm = _smooth(d_mu, eps)
+    r_mp = np.clip(dm / dp, 0.0, cap)
+    r_pm = np.clip(dp / dm, 0.0, cap)
+    max_pi_over_mu = float(r_pm.max())
+    return {
+        'max_mu_over_pi': float(r_mp.max()),
+        'max_pi_over_mu': max_pi_over_mu,
+        'chi2_pi_mu': float(np.sum((dp - dm) ** 2 / dm)),
+        'kl_pi_mu': float(np.sum(dp * np.log(dp / dm))),
+        'kl_mu_pi': float(np.sum(dm * np.log(dm / dp))),
+        'tv': float(0.5 * np.sum(np.abs(dp - dm))),
+        'renyi_inf': float(np.log(max_pi_over_mu)),
+    }
+
+
+def coverage_ratio_grids(d_pi, d_mu, eps=1e-9, cap=1e3):
+    """Smoothed + capped per-(s,a) ratio grids (mu/pi, pi/mu)."""
+    dp = _smooth(d_pi, eps)
+    dm = _smooth(d_mu, eps)
+    return np.clip(dm / dp, 0.0, cap), np.clip(dp / dm, 0.0, cap)
