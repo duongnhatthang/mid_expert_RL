@@ -139,24 +139,62 @@ def _average_grids(list_of_coverage_grids, ref):
 
 def _emit_coverage_plots(out_dir, mode, cell_info, histories_by_teacher,
                          baseline_histories, grids_by_teacher, baseline_grids,
-                         top_tv, grid_size):
-    """Write coverage curves (per ref) + heatmaps (top teacher & baseline)."""
+                         grid_size):
+    """Write coverage curves (per ref) + one heatmap per α=1 teacher value
+    plus the α=0 baseline.
+
+    Labels/filenames match the curve-legend convention: capability →
+    "cap=N" / `capN`, zeta → "ζ=v" / `zetaV`.
+    """
+    def _tag(tv):
+        return f'cap={tv}' if mode == 'capability' else f'ζ={tv}'
+
+    def _slug(tv):
+        return f'cap{tv}' if mode == 'capability' else f'zeta{tv}'
+
     for ref in ('analytic', 'learned'):
         plot_coverage_curves(
             histories_by_teacher=histories_by_teacher,
             baseline_history_alpha_zero=baseline_histories,
             mode=mode, out_dir=out_dir, cell_info=cell_info, ref=ref,
         )
-        plot_coverage_heatmaps(
-            ref, _average_grids(grids_by_teacher[top_tv], ref), grid_size,
-            os.path.join(out_dir, f'cov_{ref}_heatmap_top.png'),
-            cell_info, student_label=f'top teacher (α=1)',
-        )
+        for tv in sorted(grids_by_teacher):
+            plot_coverage_heatmaps(
+                ref, _average_grids(grids_by_teacher[tv], ref), grid_size,
+                os.path.join(out_dir, f'cov_{ref}_heatmap_{_slug(tv)}.png'),
+                cell_info, student_label=f'teacher {_tag(tv)} (α=1)',
+            )
         plot_coverage_heatmaps(
             ref, _average_grids(baseline_grids, ref), grid_size,
             os.path.join(out_dir, f'cov_{ref}_heatmap_baseline.png'),
             cell_info, student_label='α=0 (vanilla NPG)',
         )
+
+
+def _replot_coverage_from(root):
+    """Redraw coverage figures from cached coverage_data.pkl files under `root`.
+
+    Walks <root>/<training_mode>/<sweep_mode>/coverage_data.pkl and re-emits
+    the curves + per-teacher heatmaps in place — no experiments are re-run.
+    """
+    import glob
+    pkls = sorted(glob.glob(os.path.join(root, '*', '*', 'coverage_data.pkl')))
+    if not pkls:
+        sys.exit(f"No coverage_data.pkl found under {root}")
+    for pkl in pkls:
+        with open(pkl, 'rb') as fp:
+            d = pickle.load(fp)
+        mode_out = os.path.dirname(pkl)
+        _emit_coverage_plots(
+            out_dir=mode_out, mode=d['sweep_mode'], cell_info=d['cell_info'],
+            histories_by_teacher=d['histories_by_teacher'],
+            baseline_histories=d['baseline_histories'],
+            grids_by_teacher=d['grids_by_teacher'],
+            baseline_grids=d['baseline_grids'],
+            grid_size=d['grid_size'],
+        )
+        print(f'Replotted {mode_out}/*.png')
+    print('NPG_DIAGNOSTICS_DONE')
 
 
 def main():
@@ -185,7 +223,17 @@ def main():
         help='Compute and plot coverage / distribution-mismatch diagnostics '
              '(d^pi vs analytic & learned reference occupancies).',
     )
+    parser.add_argument(
+        '--replot-coverage-from', type=str, default=None,
+        help='Redraw coverage figures from a previous run\'s cached '
+             'coverage_data.pkl files under this directory, without '
+             're-running any experiments.',
+    )
     args = parser.parse_args()
+
+    if args.replot_coverage_from is not None:
+        _replot_coverage_from(args.replot_coverage_from)
+        return
 
     training_modes = [m.strip() for m in args.training_modes.split(',')
                       if m.strip()]
@@ -281,13 +329,27 @@ def main():
                     centering='pinv',
                 )
             if args.track_coverage:
+                # Cache everything the figures need so they can be redrawn
+                # later without re-running the experiments (see
+                # --replot-coverage-from). The grids are the only piece not
+                # already in records.pkl.
+                with open(os.path.join(mode_out, 'coverage_data.pkl'),
+                          'wb') as fp:
+                    pickle.dump(dict(
+                        sweep_mode=sweep_mode, cell_info=cell_info,
+                        grid_size=args.grid_size,
+                        histories_by_teacher=dict(histories_by_teacher),
+                        baseline_histories=baseline_histories,
+                        grids_by_teacher=dict(grids_by_teacher),
+                        baseline_grids=baseline_grids,
+                    ), fp)
                 _emit_coverage_plots(
                     out_dir=mode_out, mode=sweep_mode, cell_info=cell_info,
                     histories_by_teacher=dict(histories_by_teacher),
                     baseline_histories=baseline_histories,
                     grids_by_teacher=dict(grids_by_teacher),
                     baseline_grids=baseline_grids,
-                    top_tv=tvs_alpha1[-1], grid_size=args.grid_size,
+                    grid_size=args.grid_size,
                 )
             print(f'Wrote {mode_out}/*.png')
 
